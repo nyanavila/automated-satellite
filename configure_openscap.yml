@@ -6,8 +6,13 @@
   vars:
     policy_name: all
   pre_tasks:
-    - name: Ensure proper version of rubygem-foreman_scap_client version to 0.5.1-1.1.el7sat
-      when: ansible_distribution == 'RedHat'
+  #  - name: Ensure proper version of rubygem-foreman_scap_client version to 0.5.1-1.1.el7sat
+   #   when: ansible_distribution == 'RedHat'
+   - name: Ensure proper version of rubygem-foreman_scap_client version to 0.5.1-1.1.el7sat
+      when:
+        - ansible_distribution == 'RedHat'
+        - ansible_distribution_major_version == '7'
+        
       ansible.builtin.yum:
         name: rubygem-foreman_scap_client-0.5.1-1.1.el7sat
         state: present
