@@ -6,18 +6,15 @@
   vars:
     policy_name: all
   pre_tasks:
-  #  - name: Ensure proper version of rubygem-foreman_scap_client version to 0.5.1-1.1.el7sat
-   #   when: ansible_distribution == 'RedHat'
-   - name: Ensure proper version of rubygem-foreman_scap_client version to 0.5.1-1.1.el7sat
+    - name: Ensure proper version of rubygem-foreman_scap_client version to 0.5.1-1.1.el7sat
       when:
         - ansible_distribution == 'RedHat'
         - ansible_distribution_major_version == '7'
-        
       ansible.builtin.yum:
         name: rubygem-foreman_scap_client-0.5.1-1.1.el7sat
         state: present
         allow_downgrade: true
-        
+
     - name: Install rubygem-foreman_scap_client on RHEL 8
       when:
         - ansible_distribution == 'RedHat'
@@ -25,7 +22,7 @@
       ansible.builtin.yum:
         name: rubygem-foreman_scap_client
         state: present
-        
+
     - name: Ensure proper version of rubygem-foreman_scap_client version to 0.5.1-1.el7_9
       when: ansible_distribution == 'CentOS'
       ansible.builtin.yum:
@@ -40,7 +37,6 @@
         python3 -c 'import time;import random;zzzzz=random.uniform(10.0,30.0);time.sleep(zzzzz);print(zzzzz)'
       delegate_to: localhost
       connection: local
-
     - name: "Run SCAP Scan"
       ansible.builtin.shell: "/usr/bin/foreman_scap_client {{ item.id }}"
       loop: "{{ policy }}"
