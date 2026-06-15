@@ -1,0 +1,39 @@
+---
+# Rules requiring change advisory board approval before remediation.
+# The triage engine routes these to Pipeline 4 — human review.
+manual_review_rules:
+  - sshd_disable_root_login                   # Break-glass SSH access risk
+  - disable_ctrlaltdel_reboot                 # Operational safety
+  - network_sniffer_disabled                  # May break monitoring tools
+  - package_telnet_removed                    # Verify no legacy dependencies
+  - package_rsh_removed                       # Verify no legacy dependencies
+  - package_tftp_removed                      # May break PXE boot
+  - package_ypserv_removed                    # Verify no NIS dependencies
+  - package_vsftpd_removed                    # Verify no FTP service needed
+
+# CVE severity thresholds for Pipeline 3 routing
+cve_severity_thresholds:
+  emergency:
+    cvss_min: 9.0
+    action: immediate_patch
+    notify: pagerduty
+  high:
+    cvss_min: 7.0
+    action: patch_next_window
+    notify: slack
+  medium:
+    cvss_min: 4.0
+    action: schedule_patch
+    notify: email
+  low:
+    cvss_min: 0.0
+    action: notify_only
+    notify: email
+
+# Notification routing
+notification_routing:
+  slack_channel: "#security-ops"
+  email_group: "security-team@example.com"
+  servicenow_group: "Security Operations"
+  pagerduty_service: "scap-critical"
+  maintenance_window: "Sunday 02:00-04:00 UTC"

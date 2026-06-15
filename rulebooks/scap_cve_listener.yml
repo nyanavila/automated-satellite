@@ -1,0 +1,62 @@
+---
+# =============================================================================
+# rulebooks/scap_cve_listener.yml
+#
+# EDA rulebook — listens for Lightspeed critical CVE alerts
+# and triggers emergency patch pipeline in AAP.
+#
+# Trigger sources:
+#   1. Lightspeed webhook on CVSS 9+ detection
+#   2. Satellite vulnerability API polling every 5 min
+# =============================================================================
+- name: Critical CVE alert emergency patch trigger
+  hosts: all
+  sources:
+    - name: Lightspeed CVE webhook
+      ansible.eda.webhook:
+        host: 0.0.0.0
+        port: 5002
+      filters:
+        - ansible.eda.json_filter:
+            include_keys:
+              - cve_id
+              - cvss_score
+              - affected_hosts
+              - package
+
+    - name: Satellite vulnerability API polling
+      ansible.eda.url_check:
+        urls:
+          - "{{ satellite_url }}/api/v2/vulnerabilities?severity=critical&per_page=20"
+        delay: 300
+
+  rules:
+
+    - name: Critical CVE CVSS 9 or higher immediate patch
+      condition: event.body.cvss_score >= 9.0
+      action:
+        run_job_template:
+          name: "SCAP / 03 CVE Emergency Patch"
+          organization: Default
+          job_args:
+            extra_vars:
+              cve_id: "{{ event.body.cve_id }}"
+              cvss_score: "{{ event.body.cvss_score }}"
+              affected_hosts: "{{ event.body.affected_hosts }}"
+              package_name: "{{ event.body.package }}"
+              priority: critical
+
+    - name: High CVE CVSS 7 to 9 schedule patch
+      condition: >
+        event.body.cvss_score >= 7.0 and
+        event.body.cvss_score < 9.0
+      action:
+        run_job_template:
+          name: "SCAP / 03 CVE Emergency Patch"
+          organization: Default
+          job_args:
+            extra_vars:
+              cve_id: "{{ event.body.cve_id }}"
+              cvss_score: "{{ event.body.cvss_score }}"
+              affected_hosts: "{{ event.body.affected_hosts }}"
+              priority: high

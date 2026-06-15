@@ -1,0 +1,68 @@
+---
+# =============================================================================
+# rulebooks/scap_arf_listener.yml
+#
+# EDA rulebook — listens for Satellite ARF compliance report events
+# and triggers the triage pipeline in AAP.
+#
+# Two source modes:
+#   1. Webhook (preferred) — Satellite fires immediately on report creation
+#   2. API polling (fallback) — polls every 15 min when no EDA available
+#
+# Setup:
+#   Satellite UI → Administer → Webhooks → New
+#     Target URL: http://EDA-HOST:5001/endpoint
+#     Event: Compliance report created
+# =============================================================================
+- name: SCAP ARF report automated remediation trigger
+  hosts: all
+  sources:
+    - name: Satellite ARF webhook listener
+      ansible.eda.webhook:
+        host: 0.0.0.0
+        port: 5001
+      filters:
+        - ansible.eda.json_filter:
+            include_keys:
+              - report_id
+              - host
+              - policy
+              - passed
+              - failed
+
+    - name: Satellite API polling fallback
+      ansible.eda.url_check:
+        urls:
+          - "{{ satellite_url }}/api/compliance/arf_reports?per_page=10&order=reported DESC"
+        delay: 900
+
+  rules:
+
+    - name: New ARF report created via webhook
+      condition: event.meta.headers.x-satellite-event == "arf_report_created"
+      action:
+        run_job_template:
+          name: "SCAP / 01 Triage and Route"
+          organization: Default
+          job_args:
+            extra_vars:
+              report_id: "{{ event.body.report_id }}"
+              host_name: "{{ event.body.host.name }}"
+              policy_name: "{{ event.body.policy.name }}"
+              failed_count: "{{ event.body.failed }}"
+              passed_count: "{{ event.body.passed }}"
+
+    - name: API poll found new failures
+      condition: >
+        event.body.results is defined and
+        event.body.results | selectattr('failed', 'gt', 0) | list | length > 0
+      action:
+        run_job_template:
+          name: "SCAP / 01 Triage and Route"
+          organization: Default
+          job_args:
+            extra_vars:
+              report_id: "{{ event.body.results[0].id }}"
+              host_name: "{{ event.body.results[0].host.name }}"
+              policy_name: "CIS_RHEL8_BSC_Tailored"
+              failed_count: "{{ event.body.results[0].failed }}"

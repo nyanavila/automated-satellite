@@ -1,0 +1,95 @@
+---
+# =============================================================================
+# vars/workflow_catalog.yml
+#
+# Pre-defined workflow chains for common scenarios.
+# Each entry defines a named pipeline that can be instantiated
+# by the chain_workflows.yml playbook or called directly from
+# the triage engine.
+#
+# Usage in chain_workflows.yml:
+#   vars_files:
+#     - ../../vars/workflow_catalog.yml
+#   vars:
+#     workflow_chain: "{{ catalog.scap_full_pipeline }}"
+# =============================================================================
+
+catalog:
+
+  # ── Full SCAP compliance pipeline ─────────────────────────────────────────
+  # Triggered by: ARF report webhook
+  # Steps: scan → triage → remediate → verify → report
+  scap_full_pipeline:
+    - name: "SCAP / 01 Triage and Route"
+      link: success
+    - name: "SCAP / 02 Safe Remediation"
+      link: success
+    - name: "SCAP / Verify Scan"
+      link: always
+    - name: "SCAP / 04 Manual Review"
+      link: always
+
+  # ── CVE emergency response pipeline ───────────────────────────────────────
+  # Triggered by: Lightspeed CVE webhook CVSS 9+
+  # Steps: identify → publish CV → promote → patch → verify → ticket
+  cve_emergency_pipeline:
+    - name: "SCAP / 03 CVE Emergency Patch"
+      link: success
+    - name: "SATELLITE / RHEL - Publish Content View"
+      link: success
+    - name: "SATELLITE / RHEL - Promote Content View"
+      link: success
+    - name: "SCAP / Verify Scan"
+      link: always
+
+  # ── Maintenance window pipeline ────────────────────────────────────────────
+  # Triggered by: AAP schedule — Sunday 02:00 UTC
+  # Steps: snapshot → reboot remediate → verify → cleanup snapshot
+  maintenance_window_pipeline:
+    - name: "UTILITY / Snapshot Instance"
+      link: success
+    - name: "SCAP / 02 Reboot Remediation"
+      link: success
+    - name: "SCAP / Verify Scan"
+      link: success
+    - name: "LEAPP / 04 Commit"
+      link: always
+
+  # ── Post-upgrade SCAP baseline pipeline ───────────────────────────────────
+  # Triggered by: after RHEL upgrade completes
+  # Steps: register → upload policy → scan → triage → remediate
+  post_upgrade_pipeline:
+    - name: "SERVER / RHEL7 - Register via Satellite API"
+      link: success
+    - name: "SATELLITE / Change content source for content host"
+      link: success
+    - name: "SCAP / Verify Scan"
+      link: success
+    - name: "SCAP / 01 Triage and Route"
+      link: always
+
+  # ── Compliance drift detection pipeline ───────────────────────────────────
+  # Triggered by: scheduled weekly
+  # Steps: scan all hosts → compare to baseline → alert on drift
+  compliance_drift_pipeline:
+    - name: "SCAP / Verify Scan"
+      link: success
+    - name: "SATELLITE / Query for content host configuration details"
+      link: always
+    - name: "SCAP / 04 Manual Review"
+      link: always
+
+  # ── Full remediation and report pipeline ──────────────────────────────────
+  # Triggered by: manual or scheduled
+  # Steps: scan → triage → safe fix → reboot queue → verify → report
+  full_remediation_pipeline:
+    - name: "SCAP / Verify Scan"
+      link: success
+    - name: "SCAP / 01 Triage and Route"
+      link: success
+    - name: "SCAP / 02 Safe Remediation"
+      link: success
+    - name: "SCAP / Verify Scan"
+      link: always
+    - name: "SCAP / 04 Manual Review"
+      link: always

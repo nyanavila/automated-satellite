@@ -1,0 +1,82 @@
+---
+# =============================================================================
+# playbooks/verify/configure_openscap_rhel8.yml
+#
+# Verify step — runs at the end of Pipeline 1 and Pipeline 3.
+# Installs foreman_scap_client if needed, configures it, runs the scan,
+# and ships the ARF report back to Satellite.
+#
+# Supports RHEL 7, RHEL 8, RHEL 9, and CentOS 7.
+# RHEL 8 fix: adds version condition to avoid el7sat package on RHEL 8.
+# =============================================================================
+- name: Configure and run OpenSCAP compliance scan
+  hosts: "{{ dynamic_inventory_group | default(omit) }}"
+  become: true
+  strategy: free
+  gather_facts: true
+  vars:
+    policy_name: all
+
+  pre_tasks:
+    - name: Install foreman_scap_client on RHEL 7
+      ansible.builtin.yum:
+        name: rubygem-foreman_scap_client-0.5.1-1.1.el7sat
+        state: present
+        allow_downgrade: true
+      when:
+        - ansible_distribution == 'RedHat'
+        - ansible_distribution_major_version == '7'
+
+    - name: Enable Satellite client repo on RHEL 8
+      ansible.builtin.command: >
+        subscription-manager repos
+        --enable="satellite-client-6-for-rhel-8-x86_64-rpms"
+      when:
+        - ansible_distribution == 'RedHat'
+        - ansible_distribution_major_version == '8'
+      ignore_errors: true
+
+    - name: Install foreman_scap_client on RHEL 8
+      ansible.builtin.yum:
+        name:
+          - rubygem-foreman_scap_client
+          - openscap-scanner
+          - scap-security-guide
+        state: present
+      when:
+        - ansible_distribution == 'RedHat'
+        - ansible_distribution_major_version == '8'
+
+    - name: Install foreman_scap_client on RHEL 9
+      ansible.builtin.yum:
+        name:
+          - rubygem-foreman_scap_client
+          - openscap-scanner
+          - scap-security-guide
+        state: present
+      when:
+        - ansible_distribution == 'RedHat'
+        - ansible_distribution_major_version == '9'
+
+    - name: Install foreman_scap_client on CentOS 7
+      ansible.builtin.yum:
+        name: rubygem-foreman_scap_client-0.5.1-1.el7_9
+        state: present
+        allow_downgrade: true
+      when: ansible_distribution == 'CentOS'
+
+  roles:
+    - scap_client
+
+  tasks:
+    - name: Randomized startup delay to stagger parallel scans
+      ansible.builtin.command: >
+        python3 -c 'import time,random;
+        z=random.uniform(10.0,30.0);time.sleep(z);print(z)'
+      delegate_to: localhost
+      connection: local
+
+    - name: Run SCAP scan for each policy
+      ansible.builtin.shell: "/usr/bin/foreman_scap_client {{ item.id }}"
+      loop: "{{ policy }}"
+      when: policy_scan == 'all' or item.name in policy_scan

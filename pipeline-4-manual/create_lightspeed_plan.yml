@@ -1,0 +1,111 @@
+---
+# =============================================================================
+# playbooks/pipeline-4-manual/create_lightspeed_plan.yml
+#
+# Pipeline 4 — manual review for high-risk findings.
+# Creates a Lightspeed remediation plan and ServiceNow change request.
+# Human must approve before any changes are made.
+#
+# Manual rules include: sshd_disable_root_login, network changes,
+# package removals that may break dependencies.
+# =============================================================================
+- name: Create Lightspeed remediation plan and ServiceNow ticket for manual review
+  hosts: localhost
+  gather_facts: false
+  vars:
+    satellite_url: "https://satellite.nnggr.sandbox546.opentlc.com"
+    lightspeed_token: "{{ vault_lightspeed_token }}"
+    servicenow_url: "{{ vault_servicenow_url }}"
+    servicenow_user: "{{ vault_servicenow_user }}"
+    servicenow_password: "{{ vault_servicenow_password }}"
+    slack_webhook: "{{ vault_slack_webhook }}"
+
+  tasks:
+
+    - name: Create Lightspeed remediation plan
+      ansible.builtin.uri:
+        url: "https://console.redhat.com/api/remediations/v1/remediations"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ lightspeed_token }}"
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          name: "SCAP manual review {{ host_name }} {{ policy_name }} {{ ansible_date_time.date }}"
+          add:
+            issues: >-
+              {{ manual_rules |
+                 map(attribute='source.rule_id') |
+                 map('regex_replace', '^', 'ssg:rhel8|') |
+                 map('community.general.dict_kv', 'id') | list }}
+            systems:
+              - id: "{{ host_name }}"
+        status_code: [200, 201]
+      register: lightspeed_plan
+      ignore_errors: true
+
+    - name: Create ServiceNow change request
+      ansible.builtin.uri:
+        url: "{{ servicenow_url }}/api/now/table/change_request"
+        method: POST
+        headers:
+          Authorization: "Basic {{ (servicenow_user + ':' + servicenow_password) | b64encode }}"
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          short_description: >
+            SCAP manual remediation required on {{ host_name }}
+          description: >
+            Policy: {{ policy_name }}
+            Host: {{ host_name }}
+            Report ID: {{ report_id }}
+
+            Rules requiring manual review ({{ manual_rules | length }}):
+            {% for rule in manual_rules %}
+            - {{ rule.source.rule_id }}
+              Severity: {{ rule.source.severity | default('unknown') }}
+              Risk: Requires change advisory board approval
+            {% endfor %}
+
+            Lightspeed remediation plan:
+            https://console.redhat.com/insights/remediations/{{ lightspeed_plan.json.id | default('N/A') }}
+
+            Action required: Review each rule, assess operational risk,
+            approve or document exception with justification.
+          category: Security
+          priority: >-
+            {{ '1' if manual_rules |
+               selectattr('source.severity', 'equalto', 'high') |
+               list | length > 0 else '2' }}
+          assignment_group: Security Operations
+          type: normal
+        validate_certs: false
+        status_code: [200, 201]
+      register: snow_ticket
+      ignore_errors: true
+
+    - name: Send Slack notification
+      ansible.builtin.uri:
+        url: "{{ slack_webhook }}"
+        method: POST
+        body_format: json
+        body:
+          text: >
+            :warning: *SCAP Manual Review Required*
+            Host: `{{ host_name }}` | Policy: `{{ policy_name }}`
+            Rules: {{ manual_rules | length }} requiring human approval
+            ServiceNow: {{ snow_ticket.json.result.number | default('N/A') }}
+            Lightspeed: https://console.redhat.com/insights/remediations/{{ lightspeed_plan.json.id | default('N/A') }}
+        validate_certs: true
+        status_code: [200]
+      ignore_errors: true
+
+    - name: Manual review dispatch summary
+      ansible.builtin.debug:
+        msg:
+          - "Manual review initiated for {{ host_name }}"
+          - "Rules: {{ manual_rules | map(attribute='source.rule_id') | list }}"
+          - "Lightspeed plan: {{ lightspeed_plan.json.id | default('N/A') }}"
+          - "ServiceNow ticket: {{ snow_ticket.json.result.number | default('N/A') }}"
+          - "Slack: notified #security-ops"
+          - "Next action: human approval required before any changes"

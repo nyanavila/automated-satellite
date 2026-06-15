@@ -1,0 +1,163 @@
+---
+# =============================================================================
+# playbooks/workflow/manage_workflows.yml
+#
+# Utility playbook for workflow lifecycle management:
+#   - list all workflows and their node counts
+#   - delete auto-generated workflows older than N days
+#   - clone an existing workflow with a new name
+#   - export a workflow definition to YAML for GitOps
+#
+# Usage:
+#   action: list        — show all workflows with status
+#   action: cleanup     — delete auto-generated workflows older than days_old
+#   action: clone       — clone source_workflow_name to clone_name
+#   action: export      — export workflow_name to YAML file
+# =============================================================================
+- name: Workflow lifecycle management
+  hosts: localhost
+  gather_facts: true
+  vars:
+    aap_url: "https://ansible-1.nnggr.sandbox546.opentlc.com"
+    aap_token: "{{ vault_aap_token }}"
+    action: list
+    days_old: 7
+    aap_headers:
+      Authorization: "Bearer {{ aap_token }}"
+      Content-Type: "application/json"
+
+  tasks:
+
+    - name: Get all workflow job templates
+      ansible.builtin.uri:
+        url: "{{ aap_url }}/api/v2/workflow_job_templates/?page_size=200"
+        method: GET
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        return_content: true
+      register: all_workflows
+
+    # ── Action: list ──────────────────────────────────────────────────────────
+    - name: List all workflows
+      ansible.builtin.debug:
+        msg: >-
+          [{{ item.id }}] {{ item.name }}
+          | nodes: {{ item.related.workflow_nodes | default('?') }}
+          | last run: {{ item.last_job_run | default('never') }}
+          | status: {{ item.status | default('never run') }}
+      loop: "{{ all_workflows.json.results }}"
+      when: action == 'list'
+
+    # ── Action: cleanup ───────────────────────────────────────────────────────
+    - name: Find auto-generated workflows older than N days
+      ansible.builtin.set_fact:
+        old_workflows: >-
+          {{ all_workflows.json.results |
+             selectattr('name', 'search', 'SCAP Auto-Remediation') |
+             selectattr('created', 'lt',
+               (ansible_date_time.epoch | int - (days_old * 86400)) | string) |
+             list }}
+      when: action == 'cleanup'
+
+    - name: Delete old auto-generated workflows
+      ansible.builtin.uri:
+        url: "{{ aap_url }}/api/v2/workflow_job_templates/{{ item.id }}/"
+        method: DELETE
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        status_code: [204]
+      loop: "{{ old_workflows | default([]) }}"
+      when: action == 'cleanup'
+
+    - name: Cleanup summary
+      ansible.builtin.debug:
+        msg: "Deleted {{ old_workflows | default([]) | length }} workflows older than {{ days_old }} days"
+      when: action == 'cleanup'
+
+    # ── Action: clone ─────────────────────────────────────────────────────────
+    - name: Find source workflow to clone
+      ansible.builtin.set_fact:
+        source_workflow: >-
+          {{ all_workflows.json.results |
+             selectattr('name', 'equalto', source_workflow_name) |
+             first | default({}) }}
+      when: action == 'clone'
+
+    - name: Get source workflow nodes
+      ansible.builtin.uri:
+        url: "{{ aap_url }}/api/v2/workflow_job_templates/{{ source_workflow.id }}/workflow_nodes/"
+        method: GET
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        return_content: true
+      register: source_nodes
+      when:
+        - action == 'clone'
+        - source_workflow.id is defined
+
+    - name: Create cloned workflow
+      ansible.builtin.uri:
+        url: "{{ aap_url }}/api/v2/workflow_job_templates/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "{{ clone_name }}"
+          description: "Cloned from: {{ source_workflow_name }}"
+          organization: "{{ source_workflow.organization }}"
+          extra_vars: "{{ source_workflow.extra_vars | default('{}') }}"
+        status_code: [201]
+      register: cloned_workflow
+      when:
+        - action == 'clone'
+        - source_workflow.id is defined
+
+    # ── Action: export ────────────────────────────────────────────────────────
+    - name: Find workflow to export
+      ansible.builtin.set_fact:
+        export_workflow: >-
+          {{ all_workflows.json.results |
+             selectattr('name', 'equalto', workflow_name) |
+             first | default({}) }}
+      when: action == 'export'
+
+    - name: Get workflow nodes for export
+      ansible.builtin.uri:
+        url: "{{ aap_url }}/api/v2/workflow_job_templates/{{ export_workflow.id }}/workflow_nodes/"
+        method: GET
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        return_content: true
+      register: export_nodes
+      when:
+        - action == 'export'
+        - export_workflow.id is defined
+
+    - name: Write workflow definition to YAML
+      ansible.builtin.copy:
+        dest: "/tmp/{{ workflow_name | regex_replace('[^a-zA-Z0-9]', '_') }}.yml"
+        content: |
+          ---
+          # Exported workflow: {{ workflow_name }}
+          # Exported: {{ ansible_date_time.iso8601 }}
+          workflow:
+            name: "{{ export_workflow.name }}"
+            description: "{{ export_workflow.description | default('') }}"
+            extra_vars: {{ export_workflow.extra_vars | default('{}') | to_yaml }}
+            nodes:
+          {% for node in export_nodes.json.results %}
+              - id: {{ node.id }}
+                job_template: "{{ node.summary_fields.unified_job_template.name | default('') }}"
+                success_nodes: {{ node.success_nodes | default([]) }}
+                failure_nodes: {{ node.failure_nodes | default([]) }}
+                always_nodes: {{ node.always_nodes | default([]) }}
+          {% endfor %}
+      when:
+        - action == 'export'
+        - export_workflow.id is defined
+
+    - name: Export complete
+      ansible.builtin.debug:
+        msg: "Workflow exported to /tmp/{{ workflow_name | regex_replace('[^a-zA-Z0-9]', '_') }}.yml"
+      when: action == 'export'

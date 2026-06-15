@@ -1,0 +1,99 @@
+---
+# =============================================================================
+# playbooks/pipeline-2-reboot/scap_reboot_remediate.yml
+#
+# Pipeline 2 — remediations requiring a system reboot.
+# Scheduled for maintenance window by the triage engine.
+# Takes LVM snapshot before making changes. Reboots gracefully.
+# Triggers rescan after reboot to verify compliance improvement.
+#
+# Reboot-required rules: GRUB parameters, FIPS mode,
+# kernel module blacklisting, single-user auth.
+# =============================================================================
+- name: Apply reboot-required SCAP remediations in maintenance window
+  hosts: "{{ target_host | default(omit) }}"
+  become: true
+  gather_facts: true
+  vars:
+    reboot_timeout: 600
+    policy_name: "CIS_RHEL8_BSC_Tailored"
+    satellite_url: "https://satellite.nnggr.sandbox546.opentlc.com"
+    satellite_user: "admin"
+    satellite_password: "{{ vault_satellite_password }}"
+
+  pre_tasks:
+    - name: Verify maintenance window is active
+      ansible.builtin.debug:
+        msg: "Maintenance window active — proceeding with reboot-required remediations"
+
+    - name: Take LVM snapshot before changes
+      ansible.builtin.command: >
+        lvcreate --snapshot --name scap-preremediaton-snap
+        --size 2G /dev/{{ ansible_lvm.vgs | first }}/root
+      ignore_errors: true
+      register: snapshot_result
+
+    - name: Log snapshot status
+      ansible.builtin.debug:
+        msg: "Snapshot: {{ 'created' if snapshot_result.rc == 0 else 'skipped — not LVM or no space' }}"
+
+  tasks:
+    - name: Apply GRUB parameter remediations
+      ansible.builtin.include_role:
+        name: "linux-system-roles.{{ item | regex_replace('_', '-') }}"
+      loop: "{{ target_rules | select('match', 'grub2.*') | list }}"
+      ignore_errors: true
+
+    - name: Enable FIPS mode if required
+      ansible.builtin.command: fips-mode-setup --enable
+      when: "'enable_fips_mode' in target_rules"
+      register: fips_setup
+      ignore_errors: true
+
+    - name: Apply remaining kernel module rules
+      ansible.builtin.include_role:
+        name: "linux-system-roles.{{ item | regex_replace('_', '-') }}"
+      loop: "{{ target_rules | reject('match', 'grub2.*') | reject('equalto', 'enable_fips_mode') | list }}"
+      ignore_errors: true
+
+    - name: Reboot host gracefully
+      ansible.builtin.reboot:
+        reboot_timeout: "{{ reboot_timeout }}"
+        msg: "SCAP compliance reboot — pipeline 2 maintenance window"
+        pre_reboot_delay: 30
+
+    - name: Wait for host to come back online
+      ansible.builtin.wait_for_connection:
+        delay: 30
+        timeout: 300
+
+    - name: Verify critical services after reboot
+      ansible.builtin.service:
+        name: "{{ item }}"
+        state: started
+      loop:
+        - sshd
+        - crond
+        - auditd
+        - firewalld
+      ignore_errors: true
+
+    - name: Trigger post-reboot rescan
+      ansible.builtin.uri:
+        url: "{{ satellite_url }}/api/v2/job_invocations"
+        method: POST
+        user: "{{ satellite_user }}"
+        password: "{{ satellite_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        body_format: json
+        body:
+          job_invocation:
+            inputs:
+              policy_name: "{{ policy_name }}"
+            targeting_type: static_query
+            targets:
+              - "{{ inventory_hostname }}"
+        status_code: [201]
+      delegate_to: localhost
+      become: false

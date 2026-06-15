@@ -1,0 +1,311 @@
+---
+# =============================================================================
+# playbooks/workflow/generate_dynamic_workflow.yml
+#
+# Generates a dynamic AAP workflow job template at runtime based on
+# the classified findings from the SCAP triage engine.
+#
+# Instead of calling static job templates, this playbook:
+#   1. Creates a named workflow in AAP via REST API
+#   2. Creates one node per classified bucket (safe/reboot/manual/cve)
+#   3. Links nodes with success/failure edges
+#   4. Appends a verify node after safe and CVE pipelines
+#   5. Launches the assembled workflow
+#
+# The resulting workflow is visible in the AAP UI workflow visualizer
+# and provides a complete audit trail of what ran in what order.
+#
+# AAP API reference:
+#   POST /api/v2/workflow_job_templates/          create workflow
+#   POST /api/v2/workflow_job_template_nodes/     create node
+#   POST /api/v2/workflow_job_template_nodes/:id/success_nodes/   link
+#   POST /api/v2/workflow_job_template_nodes/:id/failure_nodes/   link
+#   POST /api/v2/workflow_job_template_nodes/:id/always_nodes/    link
+#   POST /api/v2/workflow_job_templates/:id/launch/               run
+#
+# Required vars:
+#   safe_rules    list from triage engine
+#   reboot_rules  list from triage engine
+#   manual_rules  list from triage engine
+#   host_name     target host
+#   policy_name   SCAP policy name
+#   report_id     ARF report ID
+# =============================================================================
+- name: Generate dynamic workflow from SCAP triage findings
+  hosts: localhost
+  gather_facts: true
+  vars:
+    aap_url: "https://ansible-1.nnggr.sandbox546.opentlc.com"
+    aap_token: "{{ vault_aap_token }}"
+    workflow_name: >-
+      SCAP Auto-Remediation — {{ host_name }} —
+      {{ ansible_date_time.date }}T{{ ansible_date_time.time }}
+
+    # Job template IDs — update to match your AAP instance
+    jt_safe_remediate:   "{{ aap_jt_safe_remediate_id | default(omit) }}"
+    jt_reboot_remediate: "{{ aap_jt_reboot_remediate_id | default(omit) }}"
+    jt_cve_patch:        "{{ aap_jt_cve_patch_id | default(omit) }}"
+    jt_manual_review:    "{{ aap_jt_manual_review_id | default(omit) }}"
+    jt_verify_scan:      "{{ aap_jt_verify_scan_id | default(omit) }}"
+    jt_notify:           "{{ aap_jt_notify_id | default(omit) }}"
+
+    aap_headers:
+      Authorization: "Bearer {{ aap_token }}"
+      Content-Type: "application/json"
+
+  tasks:
+
+    # ── Step 1: Resolve job template IDs by name if not provided ─────────────
+    - name: Get all job template IDs from AAP
+      ansible.builtin.uri:
+        url: "{{ aap_url }}/api/v2/job_templates/?page_size=200"
+        method: GET
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        return_content: true
+      register: all_templates
+
+    - name: Build template name → ID map
+      ansible.builtin.set_fact:
+        template_map: >-
+          {{ all_templates.json.results |
+             items2dict(key_name='name', value_name='id') }}
+
+    - name: Resolve job template IDs
+      ansible.builtin.set_fact:
+        jt_safe_remediate:   "{{ template_map['SCAP / 02 Safe Remediation'] | default('') }}"
+        jt_reboot_remediate: "{{ template_map['SCAP / 02 Reboot Remediation'] | default('') }}"
+        jt_cve_patch:        "{{ template_map['SCAP / 03 CVE Emergency Patch'] | default('') }}"
+        jt_manual_review:    "{{ template_map['SCAP / 04 Manual Review'] | default('') }}"
+        jt_verify_scan:      "{{ template_map['SCAP / Verify Scan'] | default('') }}"
+        jt_notify:           "{{ template_map['SCAP / Notify'] | default('') }}"
+
+    # ── Step 2: Create the workflow job template ──────────────────────────────
+    - name: Create dynamic workflow job template
+      ansible.builtin.uri:
+        url: "{{ aap_url }}/api/v2/workflow_job_templates/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "{{ workflow_name }}"
+          description: >-
+            Auto-generated SCAP remediation workflow.
+            Host: {{ host_name }}
+            Policy: {{ policy_name }}
+            Safe rules: {{ safe_rules | length }}
+            Reboot rules: {{ reboot_rules | length }}
+            Manual rules: {{ manual_rules | length }}
+          organization: 1
+          extra_vars:
+            host_name: "{{ host_name }}"
+            policy_name: "{{ policy_name }}"
+            report_id: "{{ report_id }}"
+          ask_limit_on_launch: true
+          ask_variables_on_launch: true
+        status_code: [201]
+      register: created_workflow
+
+    - name: Store workflow ID
+      ansible.builtin.set_fact:
+        workflow_id: "{{ created_workflow.json.id }}"
+
+    - name: Log workflow creation
+      ansible.builtin.debug:
+        msg: "Workflow created — ID: {{ workflow_id }} — Name: {{ workflow_name }}"
+
+    # ── Step 3: Create workflow nodes based on triage findings ────────────────
+    - name: Create safe remediation node
+      ansible.builtin.uri:
+        url: "{{ aap_url }}/api/v2/workflow_job_template_nodes/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          workflow_job_template: "{{ workflow_id }}"
+          unified_job_template: "{{ jt_safe_remediate }}"
+          limit: "{{ host_name }}"
+          extra_data:
+            target_rules: "{{ safe_rules | map(attribute='source.rule_id') | list }}"
+            policy_name: "{{ policy_name }}"
+            auto_rescan: false
+        status_code: [201]
+      register: node_safe
+      when:
+        - safe_rules | length > 0
+        - jt_safe_remediate | length > 0
+
+    - name: Create reboot queue node
+      ansible.builtin.uri:
+        url: "{{ aap_url }}/api/v2/workflow_job_template_nodes/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          workflow_job_template: "{{ workflow_id }}"
+          unified_job_template: "{{ jt_reboot_remediate }}"
+          limit: "{{ host_name }}"
+          extra_data:
+            target_rules: "{{ reboot_rules | map(attribute='source.rule_id') | list }}"
+            policy_name: "{{ policy_name }}"
+        status_code: [201]
+      register: node_reboot
+      when:
+        - reboot_rules | length > 0
+        - jt_reboot_remediate | length > 0
+
+    - name: Create manual review node
+      ansible.builtin.uri:
+        url: "{{ aap_url }}/api/v2/workflow_job_template_nodes/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          workflow_job_template: "{{ workflow_id }}"
+          unified_job_template: "{{ jt_manual_review }}"
+          limit: "{{ host_name }}"
+          extra_data:
+            manual_rules: "{{ manual_rules }}"
+            policy_name: "{{ policy_name }}"
+            host_name: "{{ host_name }}"
+        status_code: [201]
+      register: node_manual
+      when:
+        - manual_rules | length > 0
+        - jt_manual_review | length > 0
+
+    # ── Step 4: Create verify node ────────────────────────────────────────────
+    - name: Create post-remediation verify scan node
+      ansible.builtin.uri:
+        url: "{{ aap_url }}/api/v2/workflow_job_template_nodes/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          workflow_job_template: "{{ workflow_id }}"
+          unified_job_template: "{{ jt_verify_scan }}"
+          limit: "{{ host_name }}"
+          extra_data:
+            dynamic_inventory_group: "{{ host_name }}"
+            policy_name: "{{ policy_name }}"
+        status_code: [201]
+      register: node_verify
+      when: jt_verify_scan | length > 0
+
+    - name: Create notification node
+      ansible.builtin.uri:
+        url: "{{ aap_url }}/api/v2/workflow_job_template_nodes/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          workflow_job_template: "{{ workflow_id }}"
+          unified_job_template: "{{ jt_notify }}"
+          extra_data:
+            host_name: "{{ host_name }}"
+            policy_name: "{{ policy_name }}"
+            workflow_id: "{{ workflow_id }}"
+        status_code: [201]
+      register: node_notify
+      when: jt_notify | length > 0
+
+    # ── Step 5: Link nodes with success/failure edges ─────────────────────────
+    - name: Link safe node → verify on success
+      ansible.builtin.uri:
+        url: "{{ aap_url }}/api/v2/workflow_job_template_nodes/\
+              {{ node_safe.json.id }}/success_nodes/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          id: "{{ node_verify.json.id }}"
+        status_code: [204]
+      when:
+        - node_safe is not skipped
+        - node_verify is not skipped
+
+    - name: Link safe node → notify on failure
+      ansible.builtin.uri:
+        url: "{{ aap_url }}/api/v2/workflow_job_template_nodes/\
+              {{ node_safe.json.id }}/failure_nodes/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          id: "{{ node_notify.json.id }}"
+        status_code: [204]
+      when:
+        - node_safe is not skipped
+        - node_notify is not skipped
+
+    - name: Link reboot node → notify on success
+      ansible.builtin.uri:
+        url: "{{ aap_url }}/api/v2/workflow_job_template_nodes/\
+              {{ node_reboot.json.id }}/success_nodes/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          id: "{{ node_notify.json.id }}"
+        status_code: [204]
+      when:
+        - node_reboot is not skipped
+        - node_notify is not skipped
+
+    - name: Link verify node → notify on always
+      ansible.builtin.uri:
+        url: "{{ aap_url }}/api/v2/workflow_job_template_nodes/\
+              {{ node_verify.json.id }}/always_nodes/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          id: "{{ node_notify.json.id }}"
+        status_code: [204]
+      when:
+        - node_verify is not skipped
+        - node_notify is not skipped
+
+    # ── Step 6: Launch the assembled workflow ─────────────────────────────────
+    - name: Launch the dynamic workflow
+      ansible.builtin.uri:
+        url: "{{ aap_url }}/api/v2/workflow_job_templates/\
+              {{ workflow_id }}/launch/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          extra_vars:
+            host_name: "{{ host_name }}"
+            policy_name: "{{ policy_name }}"
+            report_id: "{{ report_id }}"
+        status_code: [201]
+      register: launched_workflow
+
+    - name: Workflow launch summary
+      ansible.builtin.debug:
+        msg:
+          - "========================================"
+          - "Dynamic workflow assembled and launched"
+          - "Workflow ID:  {{ workflow_id }}"
+          - "Job ID:       {{ launched_workflow.json.id }}"
+          - "Nodes:"
+          - "  Safe fix:    {{ node_safe.json.id | default('skipped') }}"
+          - "  Reboot:      {{ node_reboot.json.id | default('skipped') }}"
+          - "  Manual:      {{ node_manual.json.id | default('skipped') }}"
+          - "  Verify:      {{ node_verify.json.id | default('skipped') }}"
+          - "  Notify:      {{ node_notify.json.id | default('skipped') }}"
+          - "View in AAP:"
+          - "  {{ aap_url }}/#/workflow_approvals/{{ launched_workflow.json.id }}"
+          - "========================================"

@@ -1,0 +1,17 @@
+---
+# Rules that cannot be remediated without a system reboot.
+# The triage engine routes these to Pipeline 2 — maintenance window.
+reboot_required_rules:
+  - enable_fips_mode                          # FIPS kernel mode — reboot required
+  - grub2_enable_selinux                      # Boot parameter change
+  - grub2_audit_argument                      # Boot parameter change
+  - grub2_audit_backlog_limit_argument        # Boot parameter change
+  - grub2_slub_debug_argument                 # Boot parameter change
+  - grub2_page_poison_argument                # Boot parameter change
+  - grub2_vsyscall_argument                   # Boot parameter change
+  - grub2_password                            # GRUB bootloader password
+  - grub2_uefi_password                       # UEFI GRUB password
+  - require_singleuser_auth                   # PAM single-user auth
+  - service_debug-shell_disabled              # Systemd debug shell unit
+  - kernel_module_cramfs_disabled             # Kernel module blacklist
+  - kernel_module_bluetooth_disabled          # Kernel module blacklist

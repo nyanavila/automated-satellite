@@ -1,0 +1,173 @@
+---
+# =============================================================================
+# playbooks/workflow/chain_workflows.yml
+#
+# Chains multiple existing AAP workflow job templates into a
+# single master pipeline by linking them as nodes within a
+# new parent workflow.
+#
+# AAP supports workflow job templates as nodes inside other workflows.
+# Use unified_job_template pointing to a workflow_job_template ID
+# to nest one workflow inside another.
+#
+# Example chain:
+#   Workflow A: SCAP scan + triage
+#       on_success →
+#   Workflow B: Remediate (safe + reboot + CVE)
+#       on_success →
+#   Workflow C: Verify + report + notify
+#
+# This creates a complete end-to-end pipeline visible as one
+# workflow in the AAP UI with full audit trail across all steps.
+#
+# Required vars:
+#   workflow_chain  list of dicts:
+#     - name: "SCAP Scan and Triage"
+#       link: success
+#     - name: "SCAP Remediation"
+#       link: success
+#     - name: "SCAP Verify and Report"
+#       link: always
+#   chain_name: "SCAP Full Pipeline — node1.example.com"
+# =============================================================================
+- name: Chain multiple AAP workflows into a single master pipeline
+  hosts: localhost
+  gather_facts: true
+  vars:
+    aap_url: "https://ansible-1.nnggr.sandbox546.opentlc.com"
+    aap_token: "{{ vault_aap_token }}"
+    chain_name: "SCAP Full Pipeline — {{ host_name | default('all') }} — {{ ansible_date_time.date }}"
+    aap_headers:
+      Authorization: "Bearer {{ aap_token }}"
+      Content-Type: "application/json"
+
+    # Default chain — override via extra_vars
+    workflow_chain:
+      - name: "SCAP / Scan and Triage"
+        link: success
+      - name: "SCAP / Remediation"
+        link: success
+      - name: "SCAP / Verify and Report"
+        link: always
+
+  tasks:
+
+    # ── Step 1: Resolve all workflow IDs by name ──────────────────────────────
+    - name: Get all workflow job templates from AAP
+      ansible.builtin.uri:
+        url: "{{ aap_url }}/api/v2/workflow_job_templates/?page_size=200"
+        method: GET
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        return_content: true
+      register: all_workflows
+
+    - name: Build workflow name → ID map
+      ansible.builtin.set_fact:
+        workflow_map: >-
+          {{ all_workflows.json.results |
+             items2dict(key_name='name', value_name='id') }}
+
+    - name: Resolve workflow IDs for chain
+      ansible.builtin.set_fact:
+        resolved_chain: >-
+          {{ workflow_chain |
+             map('combine', {'id': workflow_map[item.name] | default('')}) |
+             list }}
+      loop: "{{ workflow_chain }}"
+
+    - name: Validate all workflows found
+      ansible.builtin.assert:
+        that:
+          - item.id | string | length > 0
+        fail_msg: "Workflow '{{ item.name }}' not found in AAP. Create it first."
+        success_msg: "✓ Found: {{ item.name }} → ID {{ item.id }}"
+      loop: "{{ resolved_chain }}"
+
+    # ── Step 2: Create master chain workflow ──────────────────────────────────
+    - name: Create master chain workflow job template
+      ansible.builtin.uri:
+        url: "{{ aap_url }}/api/v2/workflow_job_templates/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "{{ chain_name }}"
+          description: >-
+            Chained workflow pipeline.
+            Steps: {{ workflow_chain | map(attribute='name') | join(' → ') }}
+          organization: 1
+          ask_variables_on_launch: true
+        status_code: [201]
+      register: master_workflow
+
+    - name: Store master workflow ID
+      ansible.builtin.set_fact:
+        master_id: "{{ master_workflow.json.id }}"
+
+    # ── Step 3: Create one node per workflow in the chain ─────────────────────
+    - name: Create chain nodes
+      ansible.builtin.uri:
+        url: "{{ aap_url }}/api/v2/workflow_job_template_nodes/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          workflow_job_template: "{{ master_id }}"
+          unified_job_template: "{{ item.id }}"
+        status_code: [201]
+      register: chain_nodes
+      loop: "{{ resolved_chain }}"
+
+    - name: Extract node IDs in order
+      ansible.builtin.set_fact:
+        node_ids: "{{ chain_nodes.results | map(attribute='json') | map(attribute='id') | list }}"
+
+    # ── Step 4: Link nodes sequentially with correct edge types ───────────────
+    - name: Link chain nodes in sequence
+      ansible.builtin.uri:
+        url: >-
+          {{ aap_url }}/api/v2/workflow_job_template_nodes/
+          {{ node_ids[idx] }}/
+          {{ resolved_chain[idx + 1].link }}_nodes/
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          id: "{{ node_ids[idx + 1] }}"
+        status_code: [204]
+      loop: "{{ range(0, node_ids | length - 1) | list }}"
+      loop_control:
+        loop_var: idx
+
+    # ── Step 5: Optionally launch the master chain ────────────────────────────
+    - name: Launch the master chain workflow
+      ansible.builtin.uri:
+        url: "{{ aap_url }}/api/v2/workflow_job_templates/{{ master_id }}/launch/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          extra_vars: "{{ chain_extra_vars | default({}) }}"
+        status_code: [201]
+      register: chain_launch
+      when: auto_launch | default(true) | bool
+
+    - name: Chain assembly summary
+      ansible.builtin.debug:
+        msg:
+          - "========================================"
+          - "Workflow chain assembled"
+          - "Master workflow ID: {{ master_id }}"
+          - "Chain:"
+          - >-
+            {% for i in range(resolved_chain | length) %}
+            {{ '  ' + resolved_chain[i].name }}
+            {{ '  → (' + resolved_chain[i].link + ')' if i < (resolved_chain | length - 1) else '' }}
+            {% endfor %}
+          - "Job ID: {{ chain_launch.json.id | default('not launched') }}"
+          - "========================================"

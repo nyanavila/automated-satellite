@@ -1,0 +1,70 @@
+---
+# =============================================================================
+# playbooks/pipeline-1-safe/scap_safe_remediate.yml
+#
+# Pipeline 1 — safe remediations with no reboot required.
+# Runs immediately after triage dispatches this pipeline.
+# Auto-triggers a rescan when complete.
+#
+# Safe rules include: SSH hardening, audit config, GPG enforcement,
+# network sysctl settings, filesystem mount options, AIDE setup.
+# =============================================================================
+- name: Apply safe SCAP remediations and trigger rescan
+  hosts: "{{ target_host | default(omit) }}"
+  become: true
+  gather_facts: true
+  vars:
+    auto_rescan: true
+    policy_name: "CIS_RHEL8_BSC_Tailored"
+    satellite_url: "https://satellite.nnggr.sandbox546.opentlc.com"
+    satellite_user: "admin"
+    satellite_password: "{{ vault_satellite_password }}"
+
+  pre_tasks:
+    - name: Record pre-remediation compliance state
+      ansible.builtin.command: >
+        oscap xccdf eval
+        --results /tmp/pre-remediation-{{ ansible_hostname }}.xml
+        --profile xccdf_org.ssgproject.content_profile_cis
+        /usr/share/xml/scap/ssg/content/ssg-rhel8-ds.xml
+      ignore_errors: true
+      register: pre_scan
+
+  tasks:
+    - name: Apply remediations for each failing rule
+      ansible.builtin.include_role:
+        name: "linux-system-roles.{{ item | regex_replace('_', '-') }}"
+      loop: "{{ target_rules }}"
+      ignore_errors: true
+
+    - name: Verify critical services still running after remediation
+      ansible.builtin.service:
+        name: "{{ item }}"
+        state: started
+      loop:
+        - sshd
+        - crond
+        - auditd
+        - firewalld
+      ignore_errors: true
+
+    - name: Trigger rescan via Satellite REX
+      ansible.builtin.uri:
+        url: "{{ satellite_url }}/api/v2/job_invocations"
+        method: POST
+        user: "{{ satellite_user }}"
+        password: "{{ satellite_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        body_format: json
+        body:
+          job_invocation:
+            inputs:
+              policy_name: "{{ policy_name }}"
+            targeting_type: static_query
+            targets:
+              - "{{ inventory_hostname }}"
+        status_code: [201]
+      delegate_to: localhost
+      become: false
+      when: auto_rescan | bool

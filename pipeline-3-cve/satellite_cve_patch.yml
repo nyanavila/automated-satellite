@@ -1,0 +1,148 @@
+---
+# =============================================================================
+# playbooks/pipeline-3-cve/satellite_cve_patch.yml
+#
+# Pipeline 3 — critical CVE emergency patching.
+# Triggered by Lightspeed CVE webhook or Satellite vulnerability API.
+# CVSS 9+ = immediate patch with no approval gate.
+# CVSS 7-9 = patch next maintenance window.
+#
+# Flow:
+#   1. Get affected hosts from Satellite vulnerability API
+#   2. Publish content view with CVE fix included
+#   3. Promote content view through lifecycle environments
+#   4. Trigger patch job on affected hosts via AAP
+#   5. Trigger rescan to verify CVE is remediated
+#   6. Create audit trail in ServiceNow
+# =============================================================================
+- name: Emergency CVE patch CVSS 9 plus immediate response
+  hosts: localhost
+  gather_facts: false
+  vars:
+    satellite_url: "https://satellite.nnggr.sandbox546.opentlc.com"
+    satellite_user: "admin"
+    satellite_password: "{{ vault_satellite_password }}"
+    aap_url: "https://ansible-1.nnggr.sandbox546.opentlc.com"
+    aap_token: "{{ vault_aap_token }}"
+    servicenow_url: "{{ vault_servicenow_url }}"
+
+  tasks:
+
+    - name: Get affected hosts from Satellite
+      ansible.builtin.uri:
+        url: "{{ satellite_url }}/api/v2/hosts?search=applicable_errata={{ cve_id }}&per_page=100"
+        method: GET
+        user: "{{ satellite_user }}"
+        password: "{{ satellite_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        return_content: true
+      register: affected_hosts_response
+
+    - name: Extract host list
+      ansible.builtin.set_fact:
+        host_list: >-
+          {{ affected_hosts_response.json.results |
+             map(attribute='name') | list }}
+
+    - name: Log CVE response initiation
+      ansible.builtin.debug:
+        msg:
+          - "========================================"
+          - "CVE EMERGENCY RESPONSE"
+          - "CVE:            {{ cve_id }}"
+          - "CVSS Score:     {{ cvss_score }}"
+          - "Affected hosts: {{ host_list | length }}"
+          - "Priority:       {{ priority | default('critical') }}"
+          - "Action:         IMMEDIATE PATCH"
+          - "========================================"
+
+    - name: Publish RHEL8 content view with CVE fix
+      ansible.builtin.uri:
+        url: "{{ satellite_url }}/api/v2/content_views/RHEL8/publish"
+        method: POST
+        user: "{{ satellite_user }}"
+        password: "{{ satellite_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        body_format: json
+        body:
+          description: "CVE {{ cve_id }} emergency patch CVSS {{ cvss_score }}"
+        status_code: [202]
+      register: publish_task
+
+    - name: Wait for content view publish to complete
+      ansible.builtin.uri:
+        url: "{{ satellite_url }}/foreman_tasks/api/tasks/{{ publish_task.json.id }}"
+        method: GET
+        user: "{{ satellite_user }}"
+        password: "{{ satellite_password }}"
+        force_basic_auth: true
+        validate_certs: false
+      register: task_status
+      until: task_status.json.state == 'stopped'
+      retries: 30
+      delay: 10
+
+    - name: Promote content view to Dev lifecycle
+      ansible.builtin.uri:
+        url: "{{ satellite_url }}/api/v2/content_view_versions/{{ publish_task.json.output.content_view_version_id }}/promote"
+        method: POST
+        user: "{{ satellite_user }}"
+        password: "{{ satellite_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        body_format: json
+        body:
+          environment_ids:
+            - "{{ rhel8_dev_env_id | default(omit) }}"
+        status_code: [202]
+      ignore_errors: true
+
+    - name: Trigger patch on affected hosts via AAP
+      ansible.builtin.uri:
+        url: "{{ aap_url }}/api/v2/job_templates/OS - Patch OS to latest/launch/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          limit: "{{ host_list | join(',') }}"
+          extra_vars:
+            include_kernel_updates: false
+            check_only: false
+        validate_certs: false
+        status_code: [201]
+      register: patch_job
+
+    - name: Create CVE audit trail in ServiceNow
+      ansible.builtin.uri:
+        url: "{{ servicenow_url }}/api/now/table/incident"
+        method: POST
+        headers:
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          short_description: "CVE {{ cve_id }} patched — CVSS {{ cvss_score }}"
+          description: >
+            Emergency CVE patch executed automatically via EDA pipeline.
+            CVE: {{ cve_id }}
+            CVSS Score: {{ cvss_score }}
+            Hosts patched: {{ host_list | join(', ') }}
+            AAP job: {{ patch_job.json.id }}
+            Status: patch dispatched — awaiting verification rescan
+          category: Security
+          severity: 1
+          priority: 1
+        validate_certs: false
+        status_code: [200, 201]
+      ignore_errors: true
+
+    - name: CVE patch dispatch complete
+      ansible.builtin.debug:
+        msg:
+          - "CVE {{ cve_id }} patch dispatched"
+          - "Hosts targeted: {{ host_list | length }}"
+          - "AAP patch job:  {{ patch_job.json.id }}"
+          - "Next:           rescan auto-triggers on job completion"

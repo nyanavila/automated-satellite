@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xccdf:Tailoring xmlns:xccdf="http://checklists.nist.gov/xccdf/1.2" 
+                 id="xccdf_org.custom_tailoring_rhel8_generic_bsc">
+  
+  <xccdf:benchmark href="ssg-rhel8-ds.xml"/>
+  <xccdf:version time="2026-06-10T12:00:00">1.0</xccdf:version>
+
+  <xccdf:Profile id="xccdf_org.ssgproject.content_profile_cis_generic_customized" 
+                 extends="xccdf_org.ssgproject.content_profile_cis">
+    
+    <xccdf:title xml:lang="en-US">Enterprise Generic RHEL 8 BSC Hardening Baseline</xccdf:title>
+    <xccdf:description xml:lang="en-US">
+      Tailored profile derived from CIS RHEL 8 Level 1 Server. 
+      Removed s390x/IBM Z mainframe specific controls and optimized variables for standard hardware footprints.
+    </xccdf:description>
+
+    <xccdf:select idref="xccdf_org.ssgproject.content_rule_mounting_cramfs_disabled" selected="true"/> [cite: 200]
+    <xccdf:select idref="xccdf_org.ssgproject.content_rule_mounting_squashfs_disabled" selected="true"/> [cite: 261]
+    <xccdf:select idref="xccdf_org.ssgproject.content_rule_mounting_udf_disabled" selected="true"/> [cite: 287]
+
+    <xccdf:select idref="xccdf_org.ssgproject.content_rule_tmp_mounted" selected="true"/> [cite: 314]
+    <xccdf:select idref="xccdf_org.ssgproject.content_rule_mount_option_tmp_nodev" selected="true"/> [cite: 372]
+    <xccdf:select idref="xccdf_org.ssgproject.content_rule_mount_option_tmp_nosuid" selected="true"/> [cite: 398]
+    <xccdf:select idref="xccdf_org.ssgproject.content_rule_mount_option_tmp_noexec" selected="true"/> [cite: 425]
+
+    <xccdf:select idref="xccdf_org.ssgproject.content_rule_package_aide_installed" selected="true"/> [cite: 1085]
+    <xccdf:select idref="xccdf_org.ssgproject.content_rule_aide_periodic_checking_enabled" selected="true"/> [cite: 1115]
+
+    <xccdf:select idref="xccdf_org.ssgproject.content_rule_zipl_secure_boot" selected="false"/> [cite: 1158]
+    <xccdf:select idref="xccdf_org.ssgproject.content_rule_zipl_permissions" selected="false"/> [cite: 1178]
+    <xccdf:select idref="xccdf_org.ssgproject.content_rule_selinux_not_disabled_zipl" selected="false"/> [cite: 1452]
+
+    <xccdf:select idref="xccdf_org.ssgproject.content_rule_kernel_module_s390_crypto_loaded" selected="false"/> [cite: 1555]
+    <xccdf:select idref="xccdf_org.ssgproject.content_rule_ep11_coprocessors_assigned" selected="false"/> [cite: 3649]
+    <xccdf:select idref="xccdf_org.ssgproject.content_rule_cpacf_hardware_acceleration_enabled" selected="false"/> [cite: 3672]
+
+    <xccdf:select idref="xccdf_org.ssgproject.content_rule_smcd_preload_libraries" selected="false"/> [cite: 1833]
+    <xccdf:select idref="xccdf_org.ssgproject.content_rule_vepa_mode_osa_devices" selected="false"/> [cite: 1838]
+    <xccdf:select idref="xccdf_org.ssgproject.content_rule_traffic_isolation_osa_cards" selected="false"/> [cite: 1843]
+    <xccdf:select idref="xccdf_org.ssgproject.content_rule_smcd_network_traffic_isolation" selected="false"/> [cite: 3722]
+
+    <xccdf:select idref="xccdf_org.ssgproject.content_rule_ensure_gpgcheck_globally_activated" selected="true"/> [cite: 920]
+
+    <xccdf:select idref="xccdf_org.ssgproject.content_rule_sysctl_net_ipv4_ip_forward_disabled" selected="true"/> [cite: 1819]
+    <xccdf:select idref="xccdf_org.ssgproject.content_rule_sysctl_net_ipv4_conf_all_send_redirects_disabled" selected="true"/> [cite: 1829]
+    <xccdf:select idref="xccdf_org.ssgproject.content_rule_sysctl_net_ipv4_tcp_syncookies_enabled" selected="true"/> [cite: 1902]
+
+    <xccdf:select idref="xccdf_org.ssgproject.content_rule_sshd_disable_root_login" selected="true"/> [cite: 2970]
+
+    <xccdf:refine-value idref="xccdf_org.ssgproject.content_value_var_accounts_maximum_age_login_defs" 
+                        [cite_start]selector="90"/> 
+
+    <xccdf:refine-value idref="xccdf_org.ssgproject.content_value_var_accounts_user_shell_timeout_tmout" 
+                        [cite_start]selector="900"/> [cite: 3200]
+
+  </xccdf:Profile>
+</xccdf:Tailoring>
