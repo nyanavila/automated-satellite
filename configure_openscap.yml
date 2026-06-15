@@ -15,12 +15,24 @@
         state: present
         allow_downgrade: true
 
+    - name: Enable Satellite client repo on RHEL 8
+      ansible.builtin.command: >
+        subscription-manager repos
+        --enable="satellite-client-6-for-rhel-8-x86_64-rpms"
+      when:
+        - ansible_distribution == 'RedHat'
+        - ansible_distribution_major_version == '8'
+      ignore_errors: true
+
     - name: Install rubygem-foreman_scap_client on RHEL 8
       when:
         - ansible_distribution == 'RedHat'
         - ansible_distribution_major_version == '8'
       ansible.builtin.yum:
-        name: rubygem-foreman_scap_client
+        name:
+          - rubygem-foreman_scap_client
+          - openscap-scanner
+          - scap-security-guide
         state: present
 
     - name: Ensure proper version of rubygem-foreman_scap_client version to 0.5.1-1.el7_9
