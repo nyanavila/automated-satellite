@@ -26,9 +26,9 @@
     satellite_password: "{{ satellite_password | default('') }}"
     aap_url: "https://ansible-1.v2wlb.sandbox5527.opentlc.com"
     aap_token: "{{ aap_token | default('') }}"
-    report_id: "{{ report_id | default('') }}"
-    host_name: "{{ host_name | default('') }}"
-    policy_name: "{{ policy_name | default('CIS_RHEL8_BSC_Tailored') }}"
+    report_id: ""
+    host_name: ""
+    policy_name: "{{ policy_name | default('Freddie-CIS-BCS-Policy') }}"
     failed_count: "{{ failed_count | default(0) }}"
 
   tasks:
