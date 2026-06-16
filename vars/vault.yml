@@ -1,0 +1,5 @@
+---
+  vault_satellite_password: "MzEyNjQ0"
+  vault_aap_token: "kA3glxwFlMhPzpiZEXDKwasSEMjxz6"
+  vault_satellite_url: "https://satellite.v2wlb.sandbox5527.opentlc.com"
+  vault_aap_url: "https://ansible-1.v2wlb.sandbox5527.opentlc.com"
