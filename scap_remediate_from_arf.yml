@@ -217,6 +217,11 @@
       ansible.builtin.set_fact:
         triage: "{{ parse_result.stdout | from_json }}"
 
+    - name: Fail if host_name not set
+      ansible.builtin.fail:
+        msg: "host_name is required — pass from triage webhook"
+      when: host_name | default('') | length == 0
+
     - name: Triage summary
       ansible.builtin.debug:
         msg:
@@ -224,7 +229,7 @@
           - "SCAP Remediation Triage"
           - "Host:         {{ host_name }}"
           - "Safe fixes:   {{ triage.safe_count }} rules → apply now"
-          - "Reboot fixes: {{ triage.reboot_count }} rules → maintenance window"
+          - "Reboot fixes: {{ triage.counts.reboot }} rules → maintenance window"
           - "No fix avail: {{ triage.no_fix_count }} rules → manual review"
           - "Safe rules:   {{ triage.safe_rules }}"
           - "Reboot rules: {{ triage.reboot_rules }}"
@@ -238,7 +243,7 @@
         mode: '0640'
       delegate_to: "{{ host_name }}"
       become: true
-      when: triage.safe_count | int > 0
+      when: triage.counts.safe | int > 0
       ignore_errors: true
 
     - name: Apply safe remediations on node
@@ -255,7 +260,7 @@
       become: true
       register: safe_result
       ignore_errors: true
-      when: triage.safe_count | int > 0
+      when: triage.counts.safe | int > 0
 
     - name: Show safe remediation output
       ansible.builtin.debug:
@@ -272,7 +277,7 @@
         mode: '0750'
       delegate_to: "{{ host_name }}"
       become: true
-      when: triage.reboot_count | int > 0
+      when: triage.counts.reboot | int > 0
       ignore_errors: true
 
     - name: Stage reboot playbook on node
@@ -282,13 +287,13 @@
         mode: '0640'
       delegate_to: "{{ host_name }}"
       become: true
-      when: triage.reboot_count | int > 0
+      when: triage.counts.reboot | int > 0
       ignore_errors: true
 
     - name: Notify about reboot-required rules
       ansible.builtin.debug:
         msg:
-          - "REBOOT REQUIRED for {{ triage.reboot_count }} rules"
+          - "REBOOT REQUIRED for {{ triage.counts.reboot }} rules"
           - "Staged at: /var/lib/scap-remediation/reboot-{{ report_id }}.yml"
           - "Rules: {{ triage.reboot_rules }}"
           - "Action: Apply during next maintenance window then reboot"
@@ -311,7 +316,7 @@
         msg:
           - "========================================"
           - "Remediation complete"
-          - "Safe fixes applied:  {{ triage.safe_count }}"
+          - "Safe fixes applied:  {{ triage.counts.safe }}"
           - "Reboot fixes staged: {{ triage.reboot_count }}"
           - "No fix available:    {{ triage.no_fix_count }}"
           - "Rescan triggered:    {{ auto_rescan }}"
