@@ -21,13 +21,39 @@
     - ../../vars/reboot_required_rules.yml
     - ../../vars/manual_review_rules.yml
   vars:
-    satellite_url: "https://satellite.nnggr.sandbox546.opentlc.com"
+    satellite_url: "https://satellite.v2wlb.sandbox5527.opentlc.com"
     satellite_user: "admin"
-    satellite_password: "{{ vault_satellite_password }}"
-    aap_url: "https://ansible-1.nnggr.sandbox546.opentlc.com"
-    aap_token: "{{ vault_aap_token }}"
+    satellite_password: "{{ satellite_password | default('') }}"
+    aap_url: "https://ansible-1.v2wlb.sandbox5527.opentlc.com"
+    aap_token: "{{ aap_token | default('') }}"
+    report_id: "{{ report_id | default('') }}"
+    host_name: "{{ host_name | default('') }}"
+    policy_name: "{{ policy_name | default('CIS_RHEL8_BSC_Tailored') }}"
+    failed_count: "{{ failed_count | default(0) }}"
 
   tasks:
+
+    - name: Get latest ARF report if no report_id provided
+      ansible.builtin.uri:
+        url: "{{ satellite_url }}/api/compliance/arf_reports?\
+              per_page=1&order=reported+DESC"
+        method: GET
+        user: "{{ satellite_user }}"
+        password: "{{ satellite_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        return_content: true
+      register: latest_report
+      when: report_id | string | length == 0
+
+    - name: Set report_id from latest report
+      ansible.builtin.set_fact:
+        report_id: "{{ latest_report.json.results[0].id }}"
+        host_name: "{{ latest_report.json.results[0].host.name }}"
+        policy_name: "{{ latest_report.json.results[0].policy.name }}"
+      when:
+        - report_id | string | length == 0
+        - latest_report.json.results | length > 0
 
     - name: Pull ARF report from Satellite API
       ansible.builtin.uri:
@@ -39,6 +65,7 @@
         validate_certs: false
         return_content: true
       register: arf_report
+      when: report_id | string | length > 0
 
     - name: Extract all failing rules
       ansible.builtin.set_fact:
