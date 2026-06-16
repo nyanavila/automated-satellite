@@ -275,16 +275,15 @@
         -i "{{ host_name }},"
         -u ec2-user
         --become
+        --become-method sudo
         -e "ansible_ssh_common_args='-o StrictHostKeyChecking=no'"
+        -e "ansible_become_password=''"
+        -e "ansible_sudo_pass=''"
         {{ triage.safe_playbook }}
       environment:
         ANSIBLE_COLLECTIONS_PATH: "/usr/share/rhc-worker-playbook/ansible/collections/ansible_collections/"
         ANSIBLE_HOST_KEY_CHECKING: "False"
-      register: safe_result
-      ignore_errors: true
-      when:
-        - triage.safe_count | int > 0
-        - not dry_run | bool
+        ANSIBLE_BECOME_ALLOW_SAME_USER: "True"
 
     - name: Show safe remediation result
       ansible.builtin.debug:
