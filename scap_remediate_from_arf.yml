@@ -1,0 +1,319 @@
+---
+# =============================================================================
+# scap_remediate_from_arf.yml
+#
+# Definitive SCAP remediation playbook for Satellite + AAP platform.
+#
+# How it works:
+#   1. Downloads ARF report XML from Satellite (bzipped)
+#   2. Parses XML to extract Ansible fix snippets per failing rule
+#   3. Classifies by tags: no_reboot_needed vs reboot_needed
+#   4. Assembles targeted playbook from actual failures only
+#   5. Executes safe fixes immediately on the node
+#   6. Stages reboot fixes to /var/lib/scap-remediation/
+#   7. Triggers foreman_scap_client rescan → new ARF to Satellite
+#
+# Source of remediation content:
+#   Satellite ARF report → GET /api/compliance/arf_reports/:id/download
+#   Each failing rule contains SSG-generated Ansible tasks
+#   Tags like no_reboot_needed guide the triage logic
+#
+# Called by: SCAP / 01 Triage and Route via AAP API
+# Triggered by: Satellite webhook on scan completion
+# =============================================================================
+- name: SCAP remediation from Satellite ARF report content
+  hosts: localhost
+  gather_facts: true
+  vars:
+    satellite_url: "https://satellite.v2wlb.sandbox5527.opentlc.com"
+    satellite_user: "admin"
+    satellite_password: "changeme"
+    report_id: ""
+    host_name: ""
+    policy_name: "changme"
+    auto_rescan: true
+    arf_file: "/tmp/arf-report-{{ report_id }}.xml"
+    safe_playbook: "/tmp/scap-safe-{{ report_id }}.yml"
+    reboot_playbook: "/tmp/scap-reboot-{{ report_id }}.yml"
+
+  tasks:
+
+    # ── Step 1: Get latest report if no ID provided ───────────────────────────
+    - name: Get latest ARF report ID
+      ansible.builtin.uri:
+        url: "{{ satellite_url }}/api/compliance/arf_reports?\
+              per_page=1&order=reported+DESC"
+        method: GET
+        user: "{{ satellite_user }}"
+        password: "{{ satellite_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        return_content: true
+      register: latest_report
+      when: report_id | string | length == 0
+
+    - name: Set report facts from latest
+      ansible.builtin.set_fact:
+        report_id: "{{ latest_report.json.results[0].id }}"
+        host_name: "{{ latest_report.json.results[0].host.name }}"
+        policy_name: "{{ latest_report.json.results[0].policy.name }}"
+        failed_count: "{{ latest_report.json.results[0].failed }}"
+        passed_count: "{{ latest_report.json.results[0].passed }}"
+      when:
+        - report_id | string | length == 0
+        - latest_report.json.results | length > 0
+
+    - name: Show report details
+      ansible.builtin.debug:
+        msg:
+          - "Report ID:  {{ report_id }}"
+          - "Host:       {{ host_name }}"
+          - "Policy:     {{ policy_name }}"
+          - "Passed:     {{ passed_count | default('?') }}"
+          - "Failed:     {{ failed_count | default('?') }}"
+
+    # ── Step 2: Download ARF XML from Satellite ───────────────────────────────
+    - name: Download bzipped ARF report from Satellite
+      ansible.builtin.uri:
+        url: "{{ satellite_url }}/api/compliance/arf_reports/{{ report_id }}/download"
+        method: GET
+        user: "{{ satellite_user }}"
+        password: "{{ satellite_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        dest: "{{ arf_file }}.bz2"
+        return_content: false
+        status_code: [200]
+      register: download_result
+
+    - name: Decompress ARF report
+      ansible.builtin.command: >
+        bunzip2 -f {{ arf_file }}.bz2
+      args:
+        creates: "{{ arf_file }}"
+
+    - name: Verify ARF XML exists
+      ansible.builtin.stat:
+        path: "{{ arf_file }}"
+      register: arf_stat
+
+    - name: Fail if ARF not downloaded
+      ansible.builtin.fail:
+        msg: "ARF report download failed — check Satellite connectivity"
+      when: not arf_stat.stat.exists
+
+    # ── Step 3: Parse ARF XML and extract Ansible fix snippets ───────────────
+    - name: Extract and classify Ansible fix snippets from ARF
+      ansible.builtin.shell: |
+        python3 << 'PYEOF'
+        import xml.etree.ElementTree as ET
+        import json
+        import re
+
+        arf_file = '{{ arf_file }}'
+        tree = ET.parse(arf_file)
+        root = tree.getroot()
+
+        # XML namespaces in ARF format
+        ns = {
+            'xccdf': 'http://checklists.nist.gov/xccdf/1.2',
+            'arf':   'http://scap.nist.gov/schema/asset-reporting-format/1.1',
+            'ai':    'http://scap.nist.gov/schema/asset-identification/1.1'
+        }
+
+        # Build map of rule_id → fix content from the benchmark
+        rule_fixes = {}
+        for rule in root.iter('{http://checklists.nist.gov/xccdf/1.2}Rule'):
+            rule_id = rule.get('id', '')
+            for fix in rule.findall('{http://checklists.nist.gov/xccdf/1.2}fix'):
+                system = fix.get('system', '')
+                if 'ansible' in system.lower():
+                    fix_text = fix.text or ''
+                    # Extract tags from the fix content
+                    tags = re.findall(r'  - (\S+)', fix_text)
+                    needs_reboot = 'no_reboot_needed' not in tags
+                    rule_fixes[rule_id] = {
+                        'content': fix_text,
+                        'tags': tags,
+                        'needs_reboot': needs_reboot,
+                        'severity': next((t.replace('_severity','')
+                                         for t in tags if '_severity' in t), 'unknown'),
+                        'disruption': next((t.replace('_disruption','')
+                                           for t in tags if '_disruption' in t), 'unknown')
+                    }
+
+        # Find all failing rules from test results
+        safe_fixes = []
+        reboot_fixes = []
+        no_fix = []
+
+        for rule_result in root.iter('{http://checklists.nist.gov/xccdf/1.2}rule-result'):
+            result_el = rule_result.find('{http://checklists.nist.gov/xccdf/1.2}result')
+            if result_el is not None and result_el.text == 'fail':
+                rule_id = rule_result.get('idref', '')
+                if rule_id in rule_fixes:
+                    fix_data = rule_fixes[rule_id]
+                    fix_data['rule_id'] = rule_id
+                    if fix_data['needs_reboot']:
+                        reboot_fixes.append(fix_data)
+                    else:
+                        safe_fixes.append(fix_data)
+                else:
+                    no_fix.append(rule_id)
+
+        # Write safe remediation playbook
+        with open('{{ safe_playbook }}', 'w') as f:
+            f.write("---\n")
+            f.write("# Auto-generated SCAP safe remediation playbook\n")
+            f.write(f"# Report: {{ report_id }} | Host: {{ host_name }}\n")
+            f.write(f"# Safe fixes: {len(safe_fixes)} rules\n")
+            f.write("- name: SCAP safe remediations (no reboot required)\n")
+            f.write("  hosts: {{ host_name }}\n")
+            f.write("  become: true\n")
+            f.write("  tasks:\n")
+            for fix in safe_fixes:
+                f.write(f"    # Rule: {fix['rule_id']}\n")
+                f.write(f"    # Severity: {fix['severity']} | Disruption: {fix['disruption']}\n")
+                # Indent the fix content as tasks
+                for line in fix['content'].strip().split('\n'):
+                    if line.strip():
+                        f.write(f"    {line}\n")
+                f.write("\n")
+
+        # Write reboot remediation playbook
+        with open('{{ reboot_playbook }}', 'w') as f:
+            f.write("---\n")
+            f.write("# Auto-generated SCAP reboot-required remediation playbook\n")
+            f.write(f"# Report: {{ report_id }} | Host: {{ host_name }}\n")
+            f.write(f"# Reboot fixes: {len(reboot_fixes)} rules\n")
+            f.write("# Apply during maintenance window then reboot\n")
+            f.write("- name: SCAP reboot-required remediations\n")
+            f.write("  hosts: {{ host_name }}\n")
+            f.write("  become: true\n")
+            f.write("  tasks:\n")
+            for fix in reboot_fixes:
+                f.write(f"    # Rule: {fix['rule_id']}\n")
+                for line in fix['content'].strip().split('\n'):
+                    if line.strip():
+                        f.write(f"    {line}\n")
+                f.write("\n")
+
+        # Output summary as JSON
+        summary = {
+            'safe_count': len(safe_fixes),
+            'reboot_count': len(reboot_fixes),
+            'no_fix_count': len(no_fix),
+            'safe_rules': [f['rule_id'] for f in safe_fixes],
+            'reboot_rules': [f['rule_id'] for f in reboot_fixes],
+            'no_fix_rules': no_fix
+        }
+        print(json.dumps(summary, indent=2))
+        PYEOF
+      register: parse_result
+      args:
+        executable: /bin/bash
+
+    - name: Set triage facts from parse result
+      ansible.builtin.set_fact:
+        triage: "{{ parse_result.stdout | from_json }}"
+
+    - name: Triage summary
+      ansible.builtin.debug:
+        msg:
+          - "========================================"
+          - "SCAP Remediation Triage"
+          - "Host:         {{ host_name }}"
+          - "Safe fixes:   {{ triage.safe_count }} rules → apply now"
+          - "Reboot fixes: {{ triage.reboot_count }} rules → maintenance window"
+          - "No fix avail: {{ triage.no_fix_count }} rules → manual review"
+          - "Safe rules:   {{ triage.safe_rules }}"
+          - "Reboot rules: {{ triage.reboot_rules }}"
+          - "========================================"
+
+    # ── Step 4: Execute safe fixes via AAP on the node ───────────────────────
+    - name: Copy safe playbook to execution node
+      ansible.builtin.copy:
+        src: "{{ safe_playbook }}"
+        dest: "{{ safe_playbook }}"
+        mode: '0640'
+      delegate_to: "{{ host_name }}"
+      become: true
+      when: triage.safe_count | int > 0
+      ignore_errors: true
+
+    - name: Apply safe remediations on node
+      ansible.builtin.command: >
+        ansible-playbook
+        -i "localhost,"
+        -c local
+        {{ safe_playbook }}
+      environment:
+        ANSIBLE_COLLECTIONS_PATH: >-
+          /usr/share/rhc-worker-playbook/ansible/
+          collections/ansible_collections/
+      delegate_to: "{{ host_name }}"
+      become: true
+      register: safe_result
+      ignore_errors: true
+      when: triage.safe_count | int > 0
+
+    - name: Show safe remediation output
+      ansible.builtin.debug:
+        msg: "{{ safe_result.stdout_lines[-10:] | default(['No output']) }}"
+      when:
+        - safe_result is not skipped
+        - safe_result.stdout_lines is defined
+
+    # ── Step 5: Stage reboot fixes ───────────────────────────────────────────
+    - name: Create staging directory on node
+      ansible.builtin.file:
+        path: /var/lib/scap-remediation
+        state: directory
+        mode: '0750'
+      delegate_to: "{{ host_name }}"
+      become: true
+      when: triage.reboot_count | int > 0
+      ignore_errors: true
+
+    - name: Stage reboot playbook on node
+      ansible.builtin.copy:
+        src: "{{ reboot_playbook }}"
+        dest: "/var/lib/scap-remediation/reboot-{{ report_id }}.yml"
+        mode: '0640'
+      delegate_to: "{{ host_name }}"
+      become: true
+      when: triage.reboot_count | int > 0
+      ignore_errors: true
+
+    - name: Notify about reboot-required rules
+      ansible.builtin.debug:
+        msg:
+          - "REBOOT REQUIRED for {{ triage.reboot_count }} rules"
+          - "Staged at: /var/lib/scap-remediation/reboot-{{ report_id }}.yml"
+          - "Rules: {{ triage.reboot_rules }}"
+          - "Action: Apply during next maintenance window then reboot"
+      when: triage.reboot_count | int > 0
+
+    # ── Step 6: Trigger rescan ────────────────────────────────────────────────
+    - name: Trigger rescan via foreman_scap_client
+      ansible.builtin.shell: >
+        for id in $(cat /etc/foreman_scap_client/config.yaml |
+        grep -E "^:[0-9]" | grep -o "[0-9]*"); do
+          foreman_scap_client $id;
+        done
+      delegate_to: "{{ host_name }}"
+      become: true
+      ignore_errors: true
+      when: auto_rescan | bool
+
+    - name: Remediation complete
+      ansible.builtin.debug:
+        msg:
+          - "========================================"
+          - "Remediation complete"
+          - "Safe fixes applied:  {{ triage.safe_count }}"
+          - "Reboot fixes staged: {{ triage.reboot_count }}"
+          - "No fix available:    {{ triage.no_fix_count }}"
+          - "Rescan triggered:    {{ auto_rescan }}"
+          - "New ARF report will appear in Satellite shortly"
+          - "========================================"
