@@ -1,25 +1,7 @@
 ---
-# =============================================================================
-# playbooks/triage/scap_triage_remediate.yml
-#
-# Core triage engine — triggered by EDA or Satellite webhook via AAP.
-# Pulls the ARF report, classifies each failing rule into one of four
-# buckets, and dispatches to the correct pipeline job template.
-#
-# Pipelines dispatched:
-#   Pipeline 1 — safe rules   → SCAP / 02 Safe Remediation (immediate)
-#   Pipeline 2 — reboot rules → SCAP / 02 Reboot Remediation (scheduled)
-#   Pipeline 4 — manual rules → SCAP / 04 Manual Review (notification)
-#
-# Required vars (from EDA event or AAP survey):
-#   report_id, host_name, policy_name, failed_count
-# =============================================================================
 - name: SCAP triage classify and route to correct pipeline
   hosts: localhost
   gather_facts: false
-  vars_files:
-    - ../../vars/reboot_required_rules.yml
-    - ../../vars/manual_review_rules.yml
   vars:
     satellite_url: "https://satellite.v2wlb.sandbox5527.opentlc.com"
     satellite_user: "admin"
@@ -30,13 +12,13 @@
     host_name: ""
     policy_name: "CIS_RHEL8_BSC_Tailored"
     failed_count: 0
+    passed_count: 0
 
   tasks:
 
     - name: Get latest ARF report if no report_id provided
       ansible.builtin.uri:
-        url: "{{ satellite_url }}/api/compliance/arf_reports?\
-              per_page=1&order=reported+DESC"
+        url: "{{ satellite_url }}/api/compliance/arf_reports?per_page=1&order=reported+DESC"
         method: GET
         user: "{{ satellite_user }}"
         password: "{{ satellite_password }}"
@@ -46,16 +28,18 @@
       register: latest_report
       when: report_id | string | length == 0
 
-    - name: Set report_id from latest report
+    - name: Set facts from latest report
       ansible.builtin.set_fact:
         report_id: "{{ latest_report.json.results[0].id }}"
         host_name: "{{ latest_report.json.results[0].host.name }}"
         policy_name: "{{ latest_report.json.results[0].policy.name }}"
+        failed_count: "{{ latest_report.json.results[0].failed }}"
+        passed_count: "{{ latest_report.json.results[0].passed }}"
       when:
         - report_id | string | length == 0
         - latest_report.json.results | length > 0
 
-    - name: Pull ARF report from Satellite API
+    - name: Pull specific ARF report metadata
       ansible.builtin.uri:
         url: "{{ satellite_url }}/api/compliance/arf_reports/{{ report_id }}"
         method: GET
@@ -67,51 +51,30 @@
       register: arf_report
       when: report_id | string | length > 0
 
-    - name: Extract all failing rules
+    - name: Set facts from specific report
       ansible.builtin.set_fact:
-        all_failing: >-
-          {{ arf_report.json.logs |
-             selectattr('result', 'equalto', 'fail') | list }}
+        host_name: "{{ arf_report.json.host.name | default(host_name) }}"
+        policy_name: "{{ arf_report.json.policy.name | default(policy_name) }}"
+        failed_count: "{{ arf_report.json.failed | default(failed_count) }}"
+        passed_count: "{{ arf_report.json.passed | default(passed_count) }}"
+      when: arf_report is not skipped
 
-    - name: Classify safe bucket no reboot needed
-      ansible.builtin.set_fact:
-        safe_rules: >-
-          {{ all_failing |
-             selectattr('source.rule_id', 'defined') |
-             rejectattr('source.rule_id', 'in',
-               reboot_required_rules + manual_review_rules) | list }}
-
-    - name: Classify reboot bucket maintenance window required
-      ansible.builtin.set_fact:
-        reboot_rules: >-
-          {{ all_failing |
-             selectattr('source.rule_id', 'defined') |
-             selectattr('source.rule_id', 'in', reboot_required_rules) | list }}
-
-    - name: Classify manual review bucket human approval required
-      ansible.builtin.set_fact:
-        manual_rules: >-
-          {{ all_failing |
-             selectattr('source.rule_id', 'defined') |
-             selectattr('source.rule_id', 'in', manual_review_rules) | list }}
-
-    - name: Triage classification summary
+    - name: Triage summary
       ansible.builtin.debug:
         msg:
           - "========================================"
-          - "SCAP Triage Summary"
-          - "Host:           {{ host_name }}"
-          - "Policy:         {{ policy_name }}"
-          - "Total failing:  {{ all_failing | length }}"
-          - "Safe fix now:   {{ safe_rules | length }} rules"
-          - "Reboot needed:  {{ reboot_rules | length }} rules"
-          - "Manual review:  {{ manual_rules | length }} rules"
-          - "Reboot rules:   {{ reboot_rules | map(attribute='source.rule_id') | list }}"
+          - "SCAP Triage Report"
+          - "Report ID:  {{ report_id }}"
+          - "Host:       {{ host_name }}"
+          - "Policy:     {{ policy_name }}"
+          - "Passed:     {{ passed_count }}"
+          - "Failed:     {{ failed_count }}"
+          - "Action:     {{ 'REMEDIATE' if failed_count | int > 0 else 'ALL CLEAR' }}"
           - "========================================"
 
-    - name: Launch Pipeline 1 safe remediation
+    - name: Launch oscap generate fix remediation on host
       ansible.builtin.uri:
-        url: "{{ aap_url }}/api/v2/job_templates/SCAP - 02 Safe Remediation/launch/"
+        url: "{{ aap_url }}/api/v2/job_templates/SCAP - Generate and Remediate/launch/"
         method: POST
         headers:
           Authorization: "Bearer {{ aap_token }}"
@@ -120,58 +83,32 @@
         body:
           limit: "{{ host_name }}"
           extra_vars:
-            target_rules: "{{ safe_rules | map(attribute='source.rule_id') | list }}"
+            report_id: "{{ report_id }}"
             policy_name: "{{ policy_name }}"
             satellite_url: "{{ satellite_url }}"
+            satellite_user: "{{ satellite_user }}"
+            satellite_password: "{{ satellite_password }}"
             auto_rescan: true
         validate_certs: false
         status_code: [201]
-      register: safe_job
-      when: safe_rules | length > 0
+      register: remediation_job
+      when:
+        - failed_count | int > 0
+        - aap_token != "changeme"
+      ignore_errors: true
 
-    - name: Schedule Pipeline 2 reboot remediation for maintenance window
-      ansible.builtin.uri:
-        url: "{{ aap_url }}/api/v2/job_templates/SCAP - 02 Reboot Remediation/schedules/"
-        method: POST
-        headers:
-          Authorization: "Bearer {{ aap_token }}"
-          Content-Type: "application/json"
-        body_format: json
-        body:
-          name: "SCAP reboot {{ host_name }} {{ policy_name }}"
-          rrule: "DTSTART;TZID=UTC:20260615T020000 RRULE:FREQ=WEEKLY;BYDAY=SU;COUNT=1"
-          extra_data:
-            limit: "{{ host_name }}"
-            target_rules: "{{ reboot_rules | map(attribute='source.rule_id') | list }}"
-            reboot_required: true
-            policy_name: "{{ policy_name }}"
-        validate_certs: false
-        status_code: [201]
-      register: reboot_schedule
-      when: reboot_rules | length > 0
+    - name: Log if compliant
+      ansible.builtin.debug:
+        msg: "Host {{ host_name }} is compliant — no remediation needed"
+      when: failed_count | int == 0
 
-    - name: Launch Pipeline 4 manual review notification
-      ansible.builtin.uri:
-        url: "{{ aap_url }}/api/v2/job_templates/SCAP - 04 Manual Review/launch/"
-        method: POST
-        headers:
-          Authorization: "Bearer {{ aap_token }}"
-          Content-Type: "application/json"
-        body_format: json
-        body:
-          limit: "{{ host_name }}"
-          extra_vars:
-            manual_rules: "{{ manual_rules }}"
-            policy_name: "{{ policy_name }}"
-            host_name: "{{ host_name }}"
-            report_id: "{{ report_id }}"
-        validate_certs: false
-        status_code: [201]
-      when: manual_rules | length > 0
-
-    - name: Dispatch complete summary
+    - name: Log remediation dispatched
       ansible.builtin.debug:
         msg:
-          - "Pipeline 1 (safe):   {{ safe_job.json.id | default('not triggered') }}"
-          - "Pipeline 2 (reboot): {{ 'scheduled for maintenance window' if reboot_rules | length > 0 else 'not triggered' }}"
-          - "Pipeline 4 (manual): {{ 'notifications sent' if manual_rules | length > 0 else 'not triggered' }}"
+          - "Remediation job launched"
+          - "AAP Job ID: {{ remediation_job.json.id | default('N/A') }}"
+          - "Host: {{ host_name }}"
+      when:
+        - failed_count | int > 0
+        - remediation_job is not skipped
+        - remediation_job is not failed
