@@ -84,6 +84,7 @@
           limit: "{{ host_name }}"
           extra_vars:
             report_id: "{{ report_id }}"
+            host_name: "{{ host_name }}"
             policy_name: "{{ policy_name }}"
             satellite_url: "{{ satellite_url }}"
             satellite_user: "{{ satellite_user }}"
