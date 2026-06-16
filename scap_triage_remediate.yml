@@ -28,7 +28,7 @@
     aap_token: "{{ aap_token | default('') }}"
     report_id: ""
     host_name: ""
-    policy_name: "{{ policy_name | default('Freddie-CIS-BCS-Policy') }}"
+    policy_name: "Freddie-CIS-BCS-Policy"
     failed_count: "{{ failed_count | default(0) }}"
 
   tasks:
