@@ -10,7 +10,7 @@
     aap_token: "changeme"
     report_id: ""
     host_name: ""
-    policy_name: "CIS_RHEL8_BSC_Tailored"
+    policy_name: "Freddie-CIS-BCS-Policy"
     failed_count: 0
     passed_count: 0
 
