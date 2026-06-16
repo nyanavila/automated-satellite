@@ -236,26 +236,26 @@
           - "========================================"
 
     # ── Step 4: Execute safe fixes via AAP on the node ───────────────────────
-   - name: Apply safe remediations from AAP controller targeting node
-      ansible.builtin.command: >
-        ansible-playbook
-        -i "{{ host_name }},"
-        {{ arf_staging_dir }}/safe-{{ report_id }}.yml
-      environment:
-        ANSIBLE_COLLECTIONS_PATH: >-
-          /usr/share/rhc-worker-playbook/ansible/collections/ansible_collections/
-        ANSIBLE_HOST_KEY_CHECKING: "False"
-      delegate_to: localhost
-      register: safe_result
-      ignore_errors: true
-      when: triage.counts.safe | int > 0
+    - name: Apply safe remediations from AAP controller targeting node
+       ansible.builtin.command: >
+         ansible-playbook
+         -i "{{ host_name }},"
+         {{ arf_staging_dir }}/safe-{{ report_id }}.yml
+       environment:
+         ANSIBLE_COLLECTIONS_PATH: >-
+           /usr/share/rhc-worker-playbook/ansible/collections/ansible_collections/
+         ANSIBLE_HOST_KEY_CHECKING: "False"
+       delegate_to: localhost
+       register: safe_result
+       ignore_errors: true
+       when: triage.counts.safe | int > 0
 
-    - name: Show safe remediation output
-      ansible.builtin.debug:
-        msg: "{{ safe_result.stdout_lines[-10:] | default(['No output']) }}"
-      when:
-        - safe_result is not skipped
-        - safe_result.stdout_lines is defined
+     - name: Show safe remediation output
+       ansible.builtin.debug:
+         msg: "{{ safe_result.stdout_lines[-10:] | default(['No output']) }}"
+       when:
+         - safe_result is not skipped
+         - safe_result.stdout_lines is defined
 
     # ── Step 5: Stage reboot fixes ───────────────────────────────────────────
     - name: Create staging directory on node
