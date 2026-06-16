@@ -23,13 +23,13 @@
   vars:
     satellite_url: "https://satellite.v2wlb.sandbox5527.opentlc.com"
     satellite_user: "admin"
-    satellite_password: "{{ satellite_password | default('') }}"
+    satellite_password: "changeme"
     aap_url: "https://ansible-1.v2wlb.sandbox5527.opentlc.com"
-    aap_token: "{{ aap_token | default('') }}"
+    aap_token: "changeme"
     report_id: ""
     host_name: ""
-    policy_name: "Freddie-CIS-BCS-Policy"
-    failed_count: "{{ failed_count | default(0) }}"
+    policy_name: "CIS_RHEL8_BSC_Tailored"
+    failed_count: 0
 
   tasks:
 
