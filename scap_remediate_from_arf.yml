@@ -236,28 +236,16 @@
           - "========================================"
 
     # ── Step 4: Execute safe fixes via AAP on the node ───────────────────────
-    - name: Copy safe playbook to execution node
-      ansible.builtin.copy:
-        src: "{{ safe_playbook }}"
-        dest: "{{ safe_playbook }}"
-        mode: '0640'
-      delegate_to: "{{ host_name }}"
-      become: true
-      when: triage.counts.safe | int > 0
-      ignore_errors: true
-
-    - name: Apply safe remediations on node
+   - name: Apply safe remediations from AAP controller targeting node
       ansible.builtin.command: >
         ansible-playbook
-        -i "localhost,"
-        -c local
-        {{ safe_playbook }}
+        -i "{{ host_name }},"
+        {{ arf_staging_dir }}/safe-{{ report_id }}.yml
       environment:
         ANSIBLE_COLLECTIONS_PATH: >-
-          /usr/share/rhc-worker-playbook/ansible/
-          collections/ansible_collections/
-      delegate_to: "{{ host_name }}"
-      become: true
+          /usr/share/rhc-worker-playbook/ansible/collections/ansible_collections/
+        ANSIBLE_HOST_KEY_CHECKING: "False"
+      delegate_to: localhost
       register: safe_result
       ignore_errors: true
       when: triage.counts.safe | int > 0
