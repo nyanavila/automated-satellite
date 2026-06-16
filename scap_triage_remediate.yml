@@ -10,7 +10,7 @@
     aap_token: "changeme"
     report_id: ""
     host_name: ""
-    policy_name: "Freddie-CIS-BCS-Policy"
+    policy_name: "changeme"
     failed_count: 0
     passed_count: 0
 
@@ -74,7 +74,7 @@
 
     - name: Launch oscap generate fix remediation on host
       ansible.builtin.uri:
-        url: "{{ aap_url }}/api/v2/job_templates/SCAP - Generate and Remediate/launch/"
+        url: "{{ aap_url }}/api/v2/job_templates/104/launch/"
         method: POST
         headers:
           Authorization: "Bearer {{ aap_token }}"
