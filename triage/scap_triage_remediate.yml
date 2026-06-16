@@ -21,10 +21,10 @@
     - ../../vars/reboot_required_rules.yml
     - ../../vars/manual_review_rules.yml
   vars:
-    satellite_url: "https://satellite.nnggr.sandbox546.opentlc.com"
+    satellite_url: "https://satellite.v2wlb.sandbox5527.opentlc.com"
     satellite_user: "admin"
     satellite_password: "{{ vault_satellite_password }}"
-    aap_url: "https://ansible-1.nnggr.sandbox546.opentlc.com"
+    aap_url: "https://ansible-1.v2wlb.sandbox5527.opentlc.com"
     aap_token: "{{ vault_aap_token }}"
 
   tasks:
