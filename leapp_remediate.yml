@@ -15,7 +15,7 @@
       delegate_to: localhost
       connection: local
       when: leapp_include_delay
-      
+
     - name: Ensure vdo package is installed for Leapp checks
       ansible.builtin.dnf:
         name: vdo
@@ -35,25 +35,26 @@
     - name: "Remediate RHEL 8 systems preparing for RHEL 9 upgrade"
       ansible.builtin.include_tasks: remediate_rhel8.yml
       when: ansible_distribution_major_version | int == 8
-      
-  # Fix Inhibitor 1: Update OS packages from 8.8 to 8.10
-  - name: Update all system packages to RHEL 8.10
-    ansible.builtin.dnf:
-      name: "*"
-      state: latest
-      update_cache: true
 
-  - name: Reboot nodes to load 8.10 kernel
+    # Fix Inhibitor 1: Update OS packages from 8.8 to 8.10
+    - name: Update all system packages to RHEL 8.10
+      ansible.builtin.dnf:
+        name: "*"
+        state: latest
+        update_cache: true
+      when: ansible_distribution_version is version('8.10', '<')
+
+    - name: Reboot nodes to load 8.10 kernel
       ansible.builtin.reboot:
-      reboot_timeout: 3600
+        reboot_timeout: 3600
+      when: ansible_distribution_version is version('8.10', '<')
 
-  # Fix Inhibitor 2: Allow RHEL 9.2 target version
-  - name: Enable unsupported leapp upgrade path (RHEL 9.2)
+    # Fix Inhibitor 2: Allow RHEL 9.2 target version
+    - name: Enable unsupported leapp upgrade path (RHEL 9.2)
       ansible.builtin.lineinfile:
-      path: /etc/environment
-      line: "LEAPP_UNSUPPORTED=1"
-      state: present
-      
+        path: /etc/environment
+        line: "LEAPP_UNSUPPORTED=1"
+        state: present
 
   handlers:
     - name: "Restart sshd"
