@@ -19,7 +19,23 @@
         executable: /bin/bash
       register: yum_repolist
       changed_when: yum_repolist.rc != 0
+    - name: Enable RHEL 8 AppStream and BaseOS repos (RHSM)
+      ansible.builtin.rhsm_repository:
+        name:
+          - rhel-8-for-x86_64-baseos-rpms
+          - rhel-8-for-x86_64-appstream-rpms
+        state: enabled
+      when:
+        - ansible_distribution_major_version | int == 8
+        - "'rhui' not in yum_repolist.stdout"
 
+    - name: Enable RHUI RHEL 8 repos (AWS EC2 / RHUI)
+      ansible.builtin.command: >
+        dnf config-manager --set-enabled rhel-8-for-x86_64-appstream-rhui-rpms rhel-8-for-x86_64-baseos-rhui-rpms
+      when:
+        - ansible_distribution_major_version | int == 8
+        - "'rhui' in yum_repolist.stdout"
+      changed_when: false
     - name: Set fact for RHUI RHEL extras repo name when EC2 and utilizing RHUI
       ansible.builtin.set_fact:
         analysis_repos_el7: "rhel-7-server-rhui-extras-rpms"
