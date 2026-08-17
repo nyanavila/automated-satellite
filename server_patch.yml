@@ -1,24 +1,24 @@
 ---
-- name: Patch/Update OS 
+- name: Patch/Update OS
   hosts: "{{ dynamic_inventory_group | default(omit) }}"
   strategy: free
   gather_facts: false
   become: true
   vars:
+    ansible_python_interpreter: auto_silent  # Dynamically handles Python 2 on EL7 and Python 3 on RHEL 8/9
     update_check_only: false
     include_kernel_updates: true
     exclude_package_list: []
     include_startup_delay: false
 
   tasks:
-    - name: Wait for connection...and gather facts
-      ansible.builtin.setup:
-        gather_timeout: 60
+    - name: Gather facts with dynamic Python interpreter discovery
+      ansible.builtin.gather_facts:
       register: setup_result
       ignore_errors: true
       until: "setup_result is not failed"
-      retries: 10
-      delay: 10
+      retries: 5
+      delay: 5
 
     - name: Register output of 'yum repolist all' (EL7 only)
       ansible.builtin.shell: |
