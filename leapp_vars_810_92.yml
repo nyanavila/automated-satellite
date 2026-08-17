@@ -1,0 +1,63 @@
+---
+# Red Hat Satellite Integration Settings
+leapp_upgrade_type: satellite
+satellite_organization: 'Default_Organization'
+
+# Dynamically enable target Satellite client repos post-upgrade
+leapp_repos_enabled:
+  - 'satellite-client-6-for-rhel-{{ ansible_distribution_major_version | int + 1 }}-x86_64-rpms'
+
+# Pre-upgrade analysis package dependencies for RHEL 7
+analysis_packages_el7:
+  - leapp-upgrade
+  - cockpit-leapp
+  - dnf-plugins-core
+
+# Pre-upgrade analysis package dependencies for RHEL 8 -> 9
+# Explicitly lists all target metapackage variants to satisfy dnf across Satellite AppStream views
+analysis_packages_el8:
+  - leapp
+  - leapp-upgrade
+  - leapp-upgrade-el8toel9
+
+# Version-agnostic target options for pre-upgrade analysis
+leapp_preupg_opts: |-
+  {%- if ansible_distribution_major_version | int == 7 -%}
+    --target 8.8
+  {%- elif ansible_distribution_major_version | int == 8 -%}
+    --target 9.2
+  {%- endif -%}
+
+# Version-agnostic target options for upgrade execution
+leapp_upgrade_opts: |-
+  {%- if ansible_distribution_major_version | int == 7 -%}
+    --target 8.8
+  {%- elif ansible_distribution_major_version | int == 8 -%}
+    --target 9.2
+  {%- endif -%}
+
+# Key used before Leapp runs (Must have RHEL 8 AppStream content view access)
+satellite_activation_key_pre_leapp: |-
+  {%- if ansible_distribution_major_version | int == 7 -%}
+    RHEL7_Dev
+  {%- elif ansible_distribution_major_version | int == 8 -%}
+    RHEL8_Dev
+  {%- endif -%}
+
+# Key used during analysis/upgrade phase
+# Points to RHEL8_Dev for EL8 analysis so dnf can fetch RHEL 8 packages without hitting RHEL 9 Content View limits
+satellite_activation_key_leapp: |-
+  {%- if ansible_distribution_major_version | int == 7 -%}
+    RHEL7IPU88_Dev
+  {%- elif ansible_distribution_major_version | int == 8 -%}
+    RHEL8_Dev
+  {%- endif -%}
+
+# Key attached post-upgrade after system reboots into target OS
+satellite_activation_key_post_leapp: |-
+  {%- if ansible_distribution_major_version | int == 8 -%}
+    RHEL8_Dev
+  {%- elif ansible_distribution_major_version | int == 9 -%}
+    RHEL9_Dev
+  {%- endif -%}
+...
