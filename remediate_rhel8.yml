@@ -17,7 +17,6 @@
   notify:
     - Restart firewalld
 
-# Answer VDO check cleanly without failing if VDO is absent
 - name: Check and answer VDO Leapp question if present
   ansible.builtin.command: leapp answer --section check_vdo.confirm=True
   register: vdo_answer
@@ -35,8 +34,8 @@
   notify:
     - Restart sshd
 
-# Fix Inhibitor 1: Upgrade OS packages from 8.8 to 8.10
-- name: Upgrade all packages to RHEL 8.10
+# Fix Inhibitor 1: Update OS packages from 8.8 to 8.10
+- name: Update all system packages to RHEL 8.10
   ansible.builtin.dnf:
     name: "*"
     state: latest
