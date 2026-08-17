@@ -1,12 +1,12 @@
 ---
-- name: Leapp Analysis
+- name: Leapp Pre-Upgrade Analysis
   hosts: "{{ dynamic_inventory_group | default(omit) }}"
   strategy: ansible.builtin.free
   gather_facts: true
   become: true
   force_handlers: true
   vars_files:
-    - leapp_vars_88_92.yml
+    - "{{ playbook_dir }}/leapp_vars_810_92.yml"
   vars:
     leapp_include_delay: false
 
@@ -19,6 +19,7 @@
         executable: /bin/bash
       register: yum_repolist
       changed_when: yum_repolist.rc != 0
+
     - name: Enable RHEL 8 AppStream and BaseOS repos (RHSM)
       ansible.builtin.rhsm_repository:
         name:
@@ -36,6 +37,7 @@
         - ansible_distribution_major_version | int == 8
         - "'rhui' in yum_repolist.stdout"
       changed_when: false
+
     - name: Set fact for RHUI RHEL extras repo name when EC2 and utilizing RHUI
       ansible.builtin.set_fact:
         analysis_repos_el7: "rhel-7-server-rhui-extras-rpms"
@@ -44,25 +46,6 @@
         - ansible_product_uuid | regex_search('^ec2|^EC2')
         - "'rhui' in yum_repolist.stdout"
         - ansible_distribution_major_version | int == 7
-
-    - name: Set analysis package list facts for preupgrade analysis for RHUI Marketplace Leapp upgrades
-      ansible.builtin.set_fact:
-        analysis_packages_el7:
-          - leapp-rhui-aws
-          - cockpit
-          - cockpit-system
-          - cockpit-leapp
-        analysis_packages_el8:
-          - leapp-rhui-aws
-          - leapp-upgrade
-          - cockpit
-          - cockpit-system
-          - cockpit-leapp
-          - vdo
-      when:
-        - ansible_system_vendor in ["Amazon EC2", "Xen"]
-        - ansible_product_uuid | regex_search('^ec2|^EC2')
-        - "'rhui' in yum_repolist.stdout"
 
     - name: Set delay time via gather_facts
       ansible.builtin.set_fact:
