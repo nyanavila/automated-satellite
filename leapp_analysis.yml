@@ -11,6 +11,7 @@
     leapp_include_delay: false
     leapp_release: "8.10"
     LEAPP_UNSUPPORTED: "1"
+    target_release: "9.4"
 
   pre_tasks:
     - name: Register output of 'yum repolist'
