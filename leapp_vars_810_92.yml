@@ -46,12 +46,12 @@ satellite_activation_key_pre_leapp: |-
   {%- endif -%}
 
 # Key used during analysis/upgrade phase
-# Points to RHEL8_Dev for EL8 analysis so dnf can fetch RHEL 8 packages without hitting RHEL 9 Content View limits
+# Points to the Composite Content View key containing both RHEL 8 and RHEL 9 repos
 satellite_activation_key_leapp: |-
   {%- if ansible_distribution_major_version | int == 7 -%}
     RHEL7IPU88_Dev
   {%- elif ansible_distribution_major_version | int == 8 -%}
-    RHEL8_Dev
+    RHEL8IPU92_Dev
   {%- endif -%}
 
 # Key attached post-upgrade after system reboots into target OS
