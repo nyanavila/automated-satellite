@@ -15,6 +15,16 @@
       delegate_to: localhost
       connection: local
       when: leapp_include_delay
+      
+    - name: Ensure vdo package is installed for Leapp checks
+      ansible.builtin.dnf:
+        name: vdo
+        state: present
+
+    - name: Automatically answer check_vdo prompt in Leapp answerfile
+      ansible.builtin.command:
+        cmd: leapp answer --section check_vdo.confirm=True
+      changed_when: false
 
     # RHEL 7 -> RHEL 8 Remediation
     - name: "Remediate RHEL 7 systems preparing for RHEL 8 upgrade"
