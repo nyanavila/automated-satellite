@@ -9,17 +9,6 @@
     include_kernel_updates: true
     exclude_package_list: []
     include_startup_delay: false
-  pre_tasks:
-    - name: Register output of 'yum repolist all' (EL7 only)
-      ansible.builtin.shell: |
-        set -o pipefail
-        yum repolist all --verbose | grep Repo-baseurl | grep -v convert2rhel
-      args:
-        executable: /bin/bash
-      register: yum_repolist_for_baseurl
-      changed_when: false
-      failed_when: false
-      when: ansible_distribution_major_version | int == 7
 
   tasks:
     - name: Wait for connection...and gather facts
@@ -30,6 +19,17 @@
       until: "setup_result is not failed"
       retries: 10
       delay: 10
+
+    - name: Register output of 'yum repolist all' (EL7 only)
+      ansible.builtin.shell: |
+        set -o pipefail
+        yum repolist all --verbose | grep Repo-baseurl | grep -v convert2rhel
+      args:
+        executable: /bin/bash
+      register: yum_repolist_for_baseurl
+      changed_when: false
+      failed_when: false
+      when: ansible_distribution_major_version | int == 7
 
     - name: Set exclude_package_list for kernel-related packages
       ansible.builtin.set_fact:
@@ -81,12 +81,13 @@
       register: reboot_result
       when: include_kernel_updates | bool and not update_check_only | bool
 
-    - name: Wait for connection...
+    - name: Wait for connection after reboot
       ansible.builtin.wait_for_connection:
         connect_timeout: 20
         sleep: 5
         delay: 5
         timeout: 300
+      when: include_kernel_updates | bool and not update_check_only | bool
 
     - name: Find any CentOS*.repo files that might have been placed in /etc/yum.repos.d
       ansible.builtin.find:
@@ -106,13 +107,16 @@
         - ansible_distribution_major_version | int == 7
         - ansible_distribution == 'CentOS'
 
-    - name: Output package updates dictionary
-      ansible.builtin.debug:
-        msg: "{{ package_updates_register }}"
+    - name: Gather package facts for report output
+      ansible.builtin.package_facts:
+        manager: auto
+      when:
+        - package_updates_register.changes is defined
+        - package_updates_register.changes.updated is defined
 
-    - name: Updated package list
+    - name: Output updated package list
       ansible.builtin.debug:
-        msg: "{% if item[0] in packages %}{{ packages[item[0]][0].version }}-{{ packages[item[0]][0].release }}.{{ packages[item[0]][0].arch }} >>> {{ item[1] }} {% else %} {{ item[1] }}{% endif %}"
+        msg: "{% if packages is defined and item[0] in packages %}{{ packages[item[0]][0].version }}-{{ packages[item[0]][0].release }}.{{ packages[item[0]][0].arch }} >>> {{ item[1] }}{% else %}{{ item[0] }} >>> {{ item[1] }}{% endif %}"
       loop: "{{ package_updates_register.changes.updated | default([]) }}"
       loop_control:
         label: "{{ item[0] }}"
