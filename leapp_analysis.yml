@@ -9,6 +9,7 @@
     - "{{ playbook_dir }}/leapp_vars_810_92.yml"
   vars:
     leapp_include_delay: false
+    leapp_release: "8.10"
 
   pre_tasks:
     - name: Register output of 'yum repolist'
