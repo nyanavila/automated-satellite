@@ -19,6 +19,7 @@ analysis_packages_el8:
   - leapp
   - leapp-upgrade
   - leapp-upgrade-el8toel9
+  - vdo
 
 # Version-agnostic target options for pre-upgrade analysis
 leapp_preupg_opts: |-
