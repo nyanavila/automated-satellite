@@ -7,6 +7,7 @@
   force_handlers: true
   vars:
     leapp_include_delay: false
+    ansible_python_interpreter: /usr/bin/python3
 
   tasks:
     - name: Include randomized delay before beginning remediation
@@ -25,7 +26,11 @@
       ansible.builtin.command:
         cmd: leapp answer --section check_vdo.confirm=True
       changed_when: false
-
+    - name: Update EL 7 OS to latest packages available
+      ansible.builtin.yum:
+        name: "*"
+        state: latest
+      when: ansible_distribution_major_version | int == 7
     # RHEL 7 -> RHEL 8 Remediation
     - name: "Remediate RHEL 7 systems preparing for RHEL 8 upgrade"
       ansible.builtin.include_tasks: remediate_rhel7.yml
