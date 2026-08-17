@@ -9,38 +9,38 @@
 - name: Configure firewalld
   ansible.builtin.lineinfile:
     path: "/etc/firewalld/firewalld.conf"
-    regex: "^(#)?{{ item.key }}"
+    regexp: "^(#)?{{ item.key }}"
     line: "{{ item.key }}={{ item.value }}"
     state: present
   loop:
-    - {key: "AllowZoneDrifting", value: "no"}
+    - { key: "AllowZoneDrifting", value: "no" }
   notify:
     - Restart firewalld
 
-- name: Check VDO devices if present # noqa command-instead-of-module
-  ansible.builtin.shell: |
-    set -o pipefail
-    leapp answer --section check_vdo.confirm=True
-  args:
-    executable: /bin/bash
+# Answer VDO check cleanly without failing if VDO is absent
+- name: Check and answer VDO Leapp question if present
+  ansible.builtin.command: leapp answer --section check_vdo.confirm=True
+  register: vdo_answer
+  changed_when: vdo_answer.rc == 0
+  failed_when: false
 
-- name: Configure sshd
+- name: Configure sshd to clear RHEL 9 Leapp inhibitors
   ansible.builtin.lineinfile:
     path: "/etc/ssh/sshd_config"
-    regex: "^(#)?{{ item.key }}"
+    regexp: "^(#)?{{ item.key }}"
     line: "{{ item.key }} {{ item.value }}"
     state: present
   loop:
-    - {key: "PermitRootLogin", value: "prohibit-password"}
-    - {key: "PasswordAuthentication", value: "no"}
+    - { key: "PermitRootLogin", value: "prohibit-password" }
   notify:
     - Restart sshd
 
-- name: Command - dnf clean all
-  ansible.builtin.command: >-
-    dnf clean all
+- name: Clean package manager metadata
+  ansible.builtin.command: dnf clean all
+  changed_when: true
 
-- name: Delete /var/cache/yum/*
-  ansible.builtin.command: >-
-    rm -rf /var/cache/yum/*
+- name: Delete yum cache directories
+  ansible.builtin.file:
+    path: /var/cache/yum
+    state: absent
 ...
