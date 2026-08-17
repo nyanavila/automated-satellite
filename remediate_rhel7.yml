@@ -5,6 +5,7 @@
     sleep: 5
     delay: 5
     timeout: 300
+  when: ansible_distribution_major_version | int == 7
 
 - name: Define kernel modules to unload
   ansible.builtin.set_fact:
@@ -12,12 +13,14 @@
       - floppy
       - pata_acpi
       - btrfs
+  when: ansible_distribution_major_version | int == 7
 
 - name: Kernel modules defined by kernel_modules_to_unload are unloaded
   community.general.modprobe:
     name: "{{ item }}"
     state: absent
   loop: "{{ kernel_modules_to_unload }}"
+  when: ansible_distribution_major_version | int == 7
 
 - name: Remove pam_pkcs11 module # noqa command-instead-of-module
   ansible.builtin.shell: |
@@ -25,6 +28,7 @@
     leapp answer --section remove_pam_pkcs11_module_check.confirm=True
   args:
     executable: /bin/bash
+  when: ansible_distribution_major_version | int == 7
 
 - name: Configure sshd
   ansible.builtin.lineinfile:
@@ -35,6 +39,7 @@
   loop:
     - {key: "PermitRootLogin", value: "prohibit-password"}
     - {key: "PasswordAuthentication", value: "no"}
+  when: ansible_distribution_major_version | int == 7
   notify:
     - Restart sshd
 
@@ -43,40 +48,41 @@
     src: "rpm-query-oracle-vendor.sh"
     dest: "/tmp/rpm-query-oracle-vendor.sh"
     mode: '0755'
+  when: ansible_distribution_major_version | int == 7
 
 - name: Query for packages that are remnants from OracleLinux7 conversions
   ansible.builtin.command: /tmp/rpm-query-oracle-vendor.sh
   register: oracle_vendor_packages
   changed_when: false
-
-# - name: Debug oracle_vendor_packages
-#   ansible.builtin.debug:
-#     msg:
-#       - "OracleLinux7 package  ==> {{ item.split(':')[1] }}"
-#   when: '"Oracle" in item'
-#   with_items: "{{ oracle_vendor_packages.stdout_lines }}"
+  when: ansible_distribution_major_version | int == 7
 
 - name: Remove OracleLinux7 remnant packages
   ansible.builtin.yum:
     name: "{{ item.split(':')[1] }}"
     state: absent
-  when: oracle_vendor_packages.stdout is not match("No Oracle America packages present")
-  loop: "{{ oracle_vendor_packages.stdout_lines }}"
+  when: 
+    - ansible_distribution_major_version | int == 7
+    - oracle_vendor_packages.stdout is defined
+    - oracle_vendor_packages.stdout is not match("No Oracle America packages present")
+  loop: "{{ oracle_vendor_packages.stdout_lines | default([]) }}"
 
 - name: Command - yum clean all
   ansible.builtin.command: >-
     yum clean all
   changed_when: false
+  when: ansible_distribution_major_version | int == 7
 
 - name: Get list of current yum cache directories
   ansible.builtin.command: >-
     ls /var/cache/yum/
   register: yum_cache_directories
   changed_when: false
+  when: ansible_distribution_major_version | int == 7
 
 - name: Remove current yum cache directories
   ansible.builtin.file:
     path: "/var/cache/yum/{{ item }}"
     state: absent
-  loop: "{{ yum_cache_directories.stdout_lines }}"
+  loop: "{{ yum_cache_directories.stdout_lines | default([]) }}"
+  when: ansible_distribution_major_version | int == 7
 ...
