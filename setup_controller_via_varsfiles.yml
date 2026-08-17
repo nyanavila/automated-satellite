@@ -10,7 +10,6 @@
         body: "ifq&entry.1569353616=satellite&entry.498055740={{ lookup('ansible.builtin.env', 'AWX_HOST') }}&submit=Submit"
       ignore_errors: true
 
-    # Gather EC2 metadata facts
     - name: Gather EC2 metadata facts
       amazon.aws.ec2_metadata_facts:
       ignore_errors: true
@@ -19,15 +18,13 @@
       ansible.builtin.set_fact:
         workshop_ec2_region: "{{ ansible_ec2_instance_identity_document_region | default('us-east-1') }}"
 
-    # 1. CentOS 7 to RHEL 7 Conversion Scenario
+    # 1. CentOS 7
     - name: Include CentOS7 Convert2RHEL CaC via vars files
-      block:
-        - name: Include Satellite centos7_c2r CaC via vars files
-          ansible.builtin.include_vars:
-            dir: config_as_code/satellite/centos7_c2r
+      ansible.builtin.include_vars:
+        dir: config_as_code/satellite/centos7_c2r
       when: controller_cac_scenario == 'CentOS7_C2R'
 
-    # 2. RHEL 8 CaC Loading (Runs for 'RHEL8' AND 'RHEL9' to maintain survey backward compatibility)
+    # 2. RHEL 8 (Must run for 'RHEL8' AND 'RHEL9' to maintain survey backward compatibility)
     - name: Include RHEL8 CaC via vars files
       block:
         - name: Include Controller rhel_8_inventories CaC via vars files
@@ -38,7 +35,7 @@
             dir: config_as_code/satellite/leapp_7_to_8
       when: controller_cac_scenario in ['RHEL8', 'RHEL9']
 
-    # 3. RHEL 9 CaC Loading (Appends RHEL 9 definitions)
+    # 3. RHEL 9
     - name: Include RHEL9 CaC via vars files
       block:
         - name: Include Controller rhel_9_inventories CaC via vars files
@@ -50,8 +47,12 @@
       when: controller_cac_scenario == 'RHEL9'
 
   roles:
-    - { role: infra.controller_configuration.inventories, when: controller_inventories is defined }
-    - { role: infra.controller_configuration.inventory_sources, when: controller_inventory_sources is defined }
-    - { role: infra.controller_configuration.job_templates, when: controller_templates is defined }
-    - { role: infra.controller_configuration.workflow_job_templates, when: controller_workflows is defined }
+    - role: infra.controller_configuration.inventories
+      when: controller_inventories is defined
+    - role: infra.controller_configuration.inventory_sources
+      when: controller_inventory_sources is defined
+    - role: infra.controller_configuration.job_templates
+      when: controller_templates is defined
+    - role: infra.controller_configuration.workflow_job_templates
+      when: controller_workflows is defined
 ...
