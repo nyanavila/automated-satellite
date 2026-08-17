@@ -12,11 +12,6 @@ collections:
     version: 1.6.1
 
 roles:
-  - src: https://github.com/heatmiser/ansible-leapp.git
-    scm: git
-    version: 2024-01-07.01
-    name: infra.leapp
-
   - src: https://github.com/heatmiser/infra.convert2rhel.git
     scm: git
     version: dev-2024-09-09.01
