@@ -9,6 +9,7 @@
     - leapp_vars_88_92.yml
   vars:
     leapp_include_delay: false
+
   pre_tasks:
     - name: Register output of 'yum repolist'
       ansible.builtin.shell: |
@@ -19,15 +20,14 @@
       register: yum_repolist
       changed_when: yum_repolist.rc != 0
 
-    # Determine if node is an EC2 Marketplace instance utilzing RHUI
     - name: Set fact for RHUI RHEL extras repo name when EC2 and utilizing RHUI
       ansible.builtin.set_fact:
         analysis_repos_el7: "rhel-7-server-rhui-extras-rpms"
       when:
-        - ansible_system_vendor == "Amazon EC2" or ansible_system_vendor == "Xen"
-        - ansible_product_uuid|regex_search('^ec2') or ansible_product_uuid|regex_search('^EC2')
+        - ansible_system_vendor in ["Amazon EC2", "Xen"]
+        - ansible_product_uuid | regex_search('^ec2|^EC2')
         - "'rhui' in yum_repolist.stdout"
-        - ansible_distribution_major_version|int == 7
+        - ansible_distribution_major_version | int == 7
 
     - name: Set analysis package list facts for preupgrade analysis for RHUI Marketplace Leapp upgrades
       ansible.builtin.set_fact:
@@ -44,29 +44,13 @@
           - cockpit-leapp
           - vdo
       when:
-        - ansible_system_vendor == "Amazon EC2" or ansible_system_vendor == "Xen"
-        - ansible_product_uuid|regex_search('^ec2') or ansible_product_uuid|regex_search('^EC2')
+        - ansible_system_vendor in ["Amazon EC2", "Xen"]
+        - ansible_product_uuid | regex_search('^ec2|^EC2')
         - "'rhui' in yum_repolist.stdout"
-
-#    - name: Create dedicated directory for leapp
-#      ansible.builtin.file:
-#        path: /leapp
-#        state: directory
-#        owner: root
-#        group: root
-#        mode: '0700'
-
-#    - name: Create symbolic link for /var/lib/leapp
-#      ansible.builtin.file:
-#        src: /leapp
-#        dest: /var/lib/leapp
-#        owner: root
-#       group: root
-#        state: link
 
     - name: Set delay time via gather_facts
       ansible.builtin.set_fact:
-        node_delay_time: "{{ inventory_hostname | regex_replace('^\\D+|\\..*', '') | int *30 }}"
+        node_delay_time: "{{ inventory_hostname | regex_replace('^\\D+|\\..*', '') | int * 30 }}"
       when: leapp_include_delay
 
     - name: Include delay before starting analysis
@@ -76,6 +60,8 @@
       connection: local
       when: leapp_include_delay
 
-  roles:
-    - infra.leapp.analysis
+  tasks:
+    - name: Execute Leapp Analysis Role
+      ansible.builtin.include_role:
+        name: infra.leapp.analysis
 ...
