@@ -1,4 +1,3 @@
----
 # Red Hat Satellite Integration Settings
 leapp_upgrade_type: satellite
 satellite_organization: 'Default_Organization'
@@ -15,7 +14,6 @@ analysis_packages_el7:
   - dnf-plugins-core
 
 # Pre-upgrade analysis package dependencies for RHEL 8 -> 9
-# Explicitly lists all target metapackage variants to satisfy dnf across Satellite AppStream views
 analysis_packages_el8:
   - leapp
   - leapp-upgrade
@@ -27,7 +25,7 @@ leapp_preupg_opts: |-
   {%- if ansible_distribution_major_version | int == 7 -%}
     --target 8.8
   {%- elif ansible_distribution_major_version | int == 8 -%}
-    --target 9.2
+    --target {{ leapp_target_release }}
   {%- endif -%}
 
 # Version-agnostic target options for upgrade execution
@@ -35,10 +33,10 @@ leapp_upgrade_opts: |-
   {%- if ansible_distribution_major_version | int == 7 -%}
     --target 8.8
   {%- elif ansible_distribution_major_version | int == 8 -%}
-    --target 9.2
+    --target {{ leapp_target_release }}
   {%- endif -%}
 
-# Key used before Leapp runs (Must have RHEL 8 AppStream content view access)
+# Key used before Leapp runs
 satellite_activation_key_pre_leapp: |-
   {%- if ansible_distribution_major_version | int == 7 -%}
     RHEL7_Dev
@@ -47,7 +45,6 @@ satellite_activation_key_pre_leapp: |-
   {%- endif -%}
 
 # Key used during analysis/upgrade phase
-# Points to the Composite Content View key containing both RHEL 8 and RHEL 9 repos
 satellite_activation_key_leapp: |-
   {%- if ansible_distribution_major_version | int == 7 -%}
     RHEL7IPU88_Dev
@@ -62,4 +59,3 @@ satellite_activation_key_post_leapp: |-
   {%- elif ansible_distribution_major_version | int == 9 -%}
     RHEL9_Dev
   {%- endif -%}
-...
