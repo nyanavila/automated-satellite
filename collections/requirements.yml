@@ -2,33 +2,19 @@
 collections:
   - name: fedora.linux_system_roles
     version: ">=1.21.0"
-    source: https://galaxy.ansible.com
-
   - name: community.general
-    version: "11.4.0"
-    source: https://galaxy.ansible.com
-
-  - name: infra.lvm_snapshots
-    version: "2.1.0"
-    source: https://galaxy.ansible.com
-
-  # Required for setup_controller_via_varsfiles.yml
+    version: ">=11.4.0"
   - name: infra.controller_configuration
     version: ">=2.6.0"
-    source: https://galaxy.ansible.com
-
   - name: awx.awx
     version: ">=23.0.0"
-    source: https://galaxy.ansible.com
 
 roles:
-  # Git-based custom Leapp role definition
   - src: https://github.com/heatmiser/ansible-leapp.git
     scm: git
     version: 2024-01-07.01
     name: infra.leapp
 
-  # Git-based custom Convert2RHEL role definition
   - src: https://github.com/heatmiser/infra.convert2rhel.git
     scm: git
     version: dev-2024-09-09.01
