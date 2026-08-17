@@ -8,6 +8,8 @@ collections:
     version: ">=2.6.0"
   - name: awx.awx
     version: ">=23.0.0"
+  - name: infra.leapp
+    version: 1.6.1
 
 roles:
   - src: https://github.com/heatmiser/ansible-leapp.git
