@@ -34,7 +34,23 @@
     - { key: "PermitRootLogin", value: "prohibit-password" }
   notify:
     - Restart sshd
+# Fix Inhibitor 1: Upgrade OS packages from 8.8 to 8.10
+- name: Upgrade all packages to RHEL 8.10
+  ansible.builtin.dnf:
+    name: "*"
+    state: latest
+    update_cache: true
 
+- name: Reboot node to apply 8.10 kernel
+  ansible.builtin.reboot:
+    reboot_timeout: 3600
+
+# Fix Inhibitor 2: Allow RHEL 9.2 target version
+- name: Set LEAPP_UNSUPPORTED environment variable
+  ansible.builtin.lineinfile:
+    path: /etc/environment
+    line: "LEAPP_UNSUPPORTED=1"
+    state: present
 - name: Clean package manager metadata
   ansible.builtin.command: dnf clean all
   changed_when: true
