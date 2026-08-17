@@ -1,23 +1,35 @@
 ---
-- name: Leapp upgrade
+- name: Leapp OS Upgrade Execution
   hosts: "{{ dynamic_inventory_group | default(omit) }}"
   strategy: ansible.builtin.free
   become: true
   force_handlers: true
-  # vars:
-  #   ansible_python_interpreter: /usr/libexec/platform-python
   vars_files:
-    - leapp_vars_88_92.yml
+    - "{{ playbook_dir }}/leapp_vars_810_92.yml"
   vars:
     leapp_include_delay: false
-  tasks:
+
+  pre_tasks:
     - name: Include randomized delay before beginning upgrade
       ansible.builtin.command: |
         python3 -c 'import time;import random;zzzzz=random.uniform(15.0,60.0);time.sleep(zzzzz);print(zzzzz)'
       delegate_to: localhost
       connection: local
       when: leapp_include_delay
+
+    - name: Ensure vdo package is present
+      ansible.builtin.dnf:
+        name: vdo
+        state: present
+
+    - name: Automatically answer check_vdo section in answerfile
+      ansible.builtin.command:
+        cmd: leapp answer --section check_vdo.confirm=True
+      changed_when: false
+      failed_when: false
+
+  tasks:
     - name: Perform OS upgrade
-      ansible.builtin.import_role:
+      ansible.builtin.include_role:
         name: infra.leapp.upgrade
 ...
