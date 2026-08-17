@@ -6,8 +6,8 @@
   become: true
   force_handlers: true
   vars:
-    leapp_include_delay: false
     ansible_python_interpreter: /usr/bin/python3
+    leapp_include_delay: false
 
   tasks:
     - name: Include randomized delay before beginning remediation
@@ -26,40 +26,16 @@
       ansible.builtin.command:
         cmd: leapp answer --section check_vdo.confirm=True
       changed_when: false
-    - name: Update EL 7 OS to latest packages available
-      ansible.builtin.yum:
-        name: "*"
-        state: latest
-      when: ansible_distribution_major_version | int == 7
-    # RHEL 7 -> RHEL 8 Remediation
+
+    # RHEL 7 -> RHEL 8 Remediation (STRICT GUARD)
     - name: "Remediate RHEL 7 systems preparing for RHEL 8 upgrade"
       ansible.builtin.include_tasks: remediate_rhel7.yml
-      when: ansible_distribution_major_version | int == 7
+      when: ansible_distribution_major_version | string == "7"
 
-    # RHEL 8 -> RHEL 9 Remediation
+    # RHEL 8 -> RHEL 9 Remediation (STRICT GUARD)
     - name: "Remediate RHEL 8 systems preparing for RHEL 9 upgrade"
       ansible.builtin.include_tasks: remediate_rhel8.yml
-      when: ansible_distribution_major_version | int == 8
-
-    # Fix Inhibitor 1: Update OS packages from 8.8 to 8.10
-    - name: Update all system packages to RHEL 8.10
-      ansible.builtin.dnf:
-        name: "*"
-        state: latest
-        update_cache: true
-      when: ansible_distribution_version is version('8.10', '<')
-
-    - name: Reboot nodes to load 8.10 kernel
-      ansible.builtin.reboot:
-        reboot_timeout: 3600
-      when: ansible_distribution_version is version('8.10', '<')
-
-    # Fix Inhibitor 2: Allow RHEL 9.2 target version
-    - name: Enable unsupported leapp upgrade path (RHEL 9.2)
-      ansible.builtin.lineinfile:
-        path: /etc/environment
-        line: "LEAPP_UNSUPPORTED=1"
-        state: present
+      when: ansible_distribution_major_version | string == "8"
 
   handlers:
     - name: "Restart sshd"
