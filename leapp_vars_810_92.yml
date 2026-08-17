@@ -2,6 +2,7 @@
 # Red Hat Satellite Integration Settings
 leapp_upgrade_type: satellite
 satellite_organization: 'Default_Organization'
+leapp_target_release: "9.4"
 
 # Dynamically enable target Satellite client repos post-upgrade
 leapp_repos_enabled:
