@@ -1,0 +1,120 @@
+---
+
+### Step 2: Create the Main Playbook (`parse_satellite_arf_with_remediations.yml`)
+
+Save this complete playbook in your working directory:
+
+```yaml
+---
+- name: Parse ARF Reports, Extract Ansible Remediations & Generate Report
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    satellite_url: "https://satellite.2hzls.sandbox223.opentlc.com"
+    satellite_user: "admin"
+    satellite_password: "your_password"
+
+  tasks:
+    # -------------------------------------------------------------------------
+    # 1. Fetch Latest ARF Report Summary from Satellite
+    # -------------------------------------------------------------------------
+    - name: Fetch latest ARF report from Satellite API
+      ansible.builtin.uri:
+        url: "{{ satellite_url }}/api/v2/arf_reports?search=host%20%3D%20{{ inventory_hostname }}&per_page=1&order=created_at%20DESC"
+        method: GET
+        user: "{{ satellite_user }}"
+        password: "{{ satellite_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Accept: "application/json"
+      delegate_to: localhost
+      register: arf_api_response
+
+    - name: Extract report metrics and ID
+      ansible.builtin.set_fact:
+        latest_arf_id: "{{ arf_api_response.json.results[0].id | default(none) }}"
+        failed_rules_count: "{{ arf_api_response.json.results[0].failed_count | default(0) }}"
+        passed_rules_count: "{{ arf_api_response.json.results[0].passed_count | default(0) }}"
+
+    # -------------------------------------------------------------------------
+    # 2. Fetch Detailed Rule Results & Parse Snippets for Reboot Flags
+    # -------------------------------------------------------------------------
+    - name: Fetch detailed report data including fix snippets
+      ansible.builtin.uri:
+        url: "{{ satellite_url }}/api/v2/arf_reports/{{ latest_arf_id }}"
+        method: GET
+        user: "{{ satellite_user }}"
+        password: "{{ satellite_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Accept: "application/json"
+      delegate_to: localhost
+      when: latest_arf_id is not none
+      register: arf_detail_response
+
+    - name: Extract failed rules, snippets, and reboot flags from fix metadata
+      ansible.builtin.set_fact:
+        failed_rules: >-
+          [
+            {% if arf_detail_response.json is defined and arf_detail_response.json.messages is defined %}
+              {% for msg in arf_detail_response.json.messages if msg.result == 'fail' %}
+                {% set snippet = msg.fixes.ansible | default('') %}
+                {% set needs_reboot = ('reboot' in snippet | lower) or ('grubby' in snippet | lower) or ('/etc/selinux/config' in snippet | lower) or ('kernel' in snippet | lower) %}
+                {
+                  "id": "{{ msg.rule_id | default('N/A') }}",
+                  "title": "{{ msg.title | default(msg.rule_id) }}",
+                  "severity": "{{ msg.severity | default('medium') }}",
+                  "snippet_requires_reboot": {{ needs_reboot | to_json }},
+                  "ansible_snippet": "{{ snippet | replace('\"', '\\\"') }}"
+                }{% if not loop.last %},{% endif %}
+              {% endfor %}
+            {% endif %}
+          ]
+
+    # -------------------------------------------------------------------------
+    # 3. Local Reboot Inspection
+    # -------------------------------------------------------------------------
+    - name: Check if updated kernel/libraries require reboot
+      ansible.builtin.command:
+        cmd: needs-restarting -r
+      register: needs_restarting_check
+      failed_when: false
+      changed_when: false
+
+    - name: Check for pending reboot flag file
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_flag_file
+
+    - name: Calculate reboot necessity
+      ansible.builtin.set_fact:
+        reboot_needed: "{{ (needs_restarting_check.rc == 1) or (reboot_flag_file.stat.exists) }}"
+        reboot_reason: >-
+          {% if needs_restarting_check.rc == 1 %}
+          Kernel or core packages updated; system reboot required.
+          {% elif reboot_flag_file.stat.exists %}
+          OpenSCAP remediation flag file is present.
+          {% else %}
+          System running on current kernel/libraries.
+          {% endif %}
+
+# -----------------------------------------------------------------------------
+# 4. Generate Combined Summary Report on Controller / AAP
+# -----------------------------------------------------------------------------
+- name: Render Executive Compliance & Remediation Report
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Render template to Markdown file
+      ansible.builtin.template:
+        src: "templates/compliance_report.j2"
+        dest: "./compliance_remediation_summary.md"
+        mode: '0644'
+
+    - name: Notify operator
+      ansible.builtin.debug:
+        msg: "Report generated successfully at ./compliance_remediation_summary.md"
