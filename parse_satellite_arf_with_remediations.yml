@@ -6,7 +6,7 @@
   vars:
     satellite_url: "https://satellite.2hzls.sandbox223.opentlc.com"
     satellite_user: "admin"
-    satellite_password: "your_password"
+    satellite_password: "MjE1ODU4"
 
   tasks:
     # -------------------------------------------------------------------------
