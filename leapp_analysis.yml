@@ -8,10 +8,12 @@
   vars_files:
     - "{{ playbook_dir }}/leapp_vars_810_92.yml"
   vars:
-    leapp_include_delay: false
+    ---
+    dynamic_inventory_group: "node4.example.com,node5.example.com,node6.example.com"
     leapp_release: "8.10"
+    leapp_target_release: "8.10"
     LEAPP_UNSUPPORTED: "1"
-    target_release: "9.4"
+    leapp_unsupported: true
 
   pre_tasks:
     - name: Register output of 'yum repolist'
