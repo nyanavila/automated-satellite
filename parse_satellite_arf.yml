@@ -1,0 +1,76 @@
+---
+- name: Parse Satellite ARF Compliance Reports & Evaluate Reboot Status
+  hosts: all
+  become: true
+  vars:
+    satellite_url: "https://satellite.2hzls.sandbox223.opentlc.com"
+    satellite_user: "admin"
+    satellite_password: "MjE1ODU4"
+
+  tasks:
+    # -------------------------------------------------------------------------
+    # 1. Query Satellite ARF Reports API
+    # -------------------------------------------------------------------------
+    - name: Get ARF Report summary for target host from Satellite API
+      ansible.builtin.uri:
+        url: "{{ satellite_url }}/api/v2/arf_reports?search=host%20%3D%20{{ inventory_hostname }}&per_page=1&order=created_at%20DESC"
+        method: GET
+        user: "{{ satellite_user }}"
+        password: "{{ satellite_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Accept: "application/json"
+      delegate_to: localhost
+      register: arf_api_response
+
+    - name: Extract latest ARF report ID and metrics
+      ansible.builtin.set_fact:
+        latest_arf_id: "{{ arf_api_response.json.results[0].id | default(none) }}"
+        failed_rules_count: "{{ arf_api_response.json.results[0].failed_count | default(0) }}"
+        passed_rules_count: "{{ arf_api_response.json.results[0].passed_count | default(0) }}"
+
+    # -------------------------------------------------------------------------
+    # 2. Check System-Level Reboot Triggers
+    # -------------------------------------------------------------------------
+    - name: Check if updated kernel/system libraries require reboot (needs-restarting)
+      ansible.builtin.command:
+        cmd: needs-restarting -r
+      register: needs_restarting_check
+      failed_when: false
+      changed_when: false
+
+    - name: Check pending reboot flag from systemd or OpenSCAP remediations
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_flag_file
+
+    # -------------------------------------------------------------------------
+    # 3. Decision Logic Matrix
+    # -------------------------------------------------------------------------
+    - name: Calculate Reboot Decision
+      ansible.builtin.set_fact:
+        reboot_needed: "{{ (needs_restarting_check.rc == 1) or (reboot_flag_file.stat.exists) }}"
+        reboot_reason: >-
+          {% if needs_restarting_check.rc == 1 %}
+          Kernel or core glibc/systemd updates require a system reboot.
+          {% elif reboot_flag_file.stat.exists %}
+          Compliance remediation placed a pending reboot flag file.
+          {% else %}
+          System is running on latest booted kernel/libraries. No reboot required.
+          {% endif %}
+
+    # -------------------------------------------------------------------------
+    # 4. Display Formatted Compliance & Reboot Summary
+    # -------------------------------------------------------------------------
+    - name: Display Host Assessment Summary
+      ansible.builtin.debug:
+        msg:
+          - "=========================================================="
+          - "HOST:                     {{ inventory_hostname }} (RHEL {{ ansible_distribution_major_version }})"
+          - "LATEST ARF REPORT ID:     {{ latest_arf_id }}"
+          - "PASSED RULES:             {{ passed_rules_count }}"
+          - "FAILED RULES:             {{ failed_rules_count }}"
+          - "REBOOT REQUIRED:          {{ reboot_needed | uppercase }}"
+          - "REASON:                   {{ reboot_reason }}"
+          - "=========================================================="
