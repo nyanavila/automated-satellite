@@ -10,17 +10,26 @@
 * **Satellite ARF Report ID:** {{ hostvars[host]['latest_arf_id'] }}
 * **Passed Rules:** {{ hostvars[host]['passed_rules_count'] }}
 * **Failed Rules:** {{ hostvars[host]['failed_rules_count'] }}
-* **Reboot Required:** **{{ 'YES' if hostvars[host]['reboot_needed'] else 'NO' }}**
+* **OS Kernel Reboot Required:** **{{ 'YES' if hostvars[host]['reboot_needed'] else 'NO' }}**
 * **Reboot Reason:** {{ hostvars[host]['reboot_reason'] | trim }}
 
-### Top Failed Rules & Available Ansible Remediations
+### Failed Rules & Snippet Reboot Assessment
 {% if hostvars[host]['failed_rules'] | length > 0 %}
 {% for rule in hostvars[host]['failed_rules'] %}
 #### Rule: {{ rule.title }}
 * **Rule ID:** `{{ rule.id }}`
 * **Severity:** `{{ rule.severity | upper }}`
+* **Snippet Requires Reboot:** **{% if rule.snippet_requires_reboot %}YES (Modifies Kernel/Boot/System State){% else %}NO (Live Remediation){% endif %}**
 
-{% if rule.ansible_snippet is defined and rule.ansible_snippet %}
+{% if rule.ansible_snippet %}
 ```yaml
 # Ansible Remediation Snippet
 {{ rule.ansible_snippet }}
+{% else %}
+No automated Ansible snippet provided for this rule.
+{% endif %}
+
+{% endfor %}
+{% else %}
+No failed rules detected for this host.
+{% endif %}
