@@ -14,7 +14,7 @@
     # -------------------------------------------------------------------------
     - name: Fetch latest ARF report from Satellite API
       ansible.builtin.uri:
-        url: "{{ satellite_url }}/api/v2/arf_reports?search=host%20%3D%20{{ inventory_hostname }}&per_page=1&order=created_at%20DESC"
+        url: "{{ satellite_url }}/api/v2/compliance/reports?search=host%20%3D%20{{ inventory_hostname }}&per_page=1&order=created_at%20DESC"
         method: GET
         user: "{{ satellite_user }}"
         password: "{{ satellite_password }}"
