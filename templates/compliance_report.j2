@@ -1,20 +1,20 @@
 # OpenSCAP Compliance & Remediation Assessment Report
-**Generated On:** {{ ansible_date_time.iso8601 }}
+**Generated On:** {{ hostvars[groups['all'][0]]['ansible_date_time']['iso8601'] | default('N/A') }}
 **Satellite Host:** {{ satellite_url }}
 
 ---
 
 {% for host in ansible_play_hosts %}
 ## Host Summary: {{ host }}
-* **Operating System:** RHEL {{ hostvars[host]['ansible_distribution_major_version'] }}
-* **Satellite ARF Report ID:** {{ hostvars[host]['latest_arf_id'] }}
-* **Passed Rules:** {{ hostvars[host]['passed_rules_count'] }}
-* **Failed Rules:** {{ hostvars[host]['failed_rules_count'] }}
-* **OS Kernel Reboot Required:** **{{ 'YES' if hostvars[host]['reboot_needed'] else 'NO' }}**
-* **Reboot Reason:** {{ hostvars[host]['reboot_reason'] | trim }}
+* **Operating System:** RHEL {{ hostvars[host]['ansible_distribution_major_version'] | default('Unknown') }}
+* **Satellite ARF Report ID:** {{ hostvars[host]['latest_arf_id'] | default('N/A') }}
+* **Passed Rules:** {{ hostvars[host]['passed_rules_count'] | default(0) }}
+* **Failed Rules:** {{ hostvars[host]['failed_rules_count'] | default(0) }}
+* **OS Kernel Reboot Required:** **{{ 'YES' if hostvars[host]['reboot_needed'] | default(false) else 'NO' }}**
+* **Reboot Reason:** {{ hostvars[host]['reboot_reason'] | default('N/A') | trim }}
 
 ### Failed Rules & Snippet Reboot Assessment
-{% if hostvars[host]['failed_rules'] | length > 0 %}
+{% if hostvars[host]['failed_rules'] is defined and hostvars[host]['failed_rules'] | length > 0 %}
 {% for rule in hostvars[host]['failed_rules'] %}
 #### Rule: {{ rule.title }}
 * **Rule ID:** `{{ rule.id }}`
@@ -28,14 +28,28 @@
 {% else %}
 No automated Ansible snippet provided for this rule.
 {% endif %}
-### Breakdown of those closing tags:
-
-1. **`{% endif %}`** – Closes the check for whether an individual rule has an `ansible_snippet`.
-2. **`{% endfor %}`** – Closes the loop iterating through every failed rule (`for rule in hostvars[host]['failed_rules']`).
-3. **`{% else %}` / `{% endif %}`** – Handles the fallback if `failed_rules` is empty (0 failed rules) and closes the `if hostvars[host]['failed_rules'] | length > 0` block.
-4. **`{% endfor %}`** – Closes the outer loop iterating over all target hosts (`for host in ansible_play_hosts`).
 
 {% endfor %}
 {% else %}
 No failed rules detected for this host.
 {% endif %}
+
+{% endfor %}
+
+
+---
+
+<Image alt="Ansible Automation Platform Job Templates UI listing multiple templates" 
+caption="AAP Controller Job Templates List" src="image_agent_tag_9213805949027568339"/>
+
+---
+
+### How They Connect in AAP Controller
+
+In the AAP Controller UI, you map this single Jinja file into your orchestration pipeline as follows:
+
+1. **Repository:** Pushing `templates/compliance_report.j2` along with `parse_satellite_arf_with_remediations.yml`.
+2. **AAP Job Template:** Pointing your AAP Job Template to `parse_satellite_arf_with_remediations.yml`.
+3. **EDA Rulebook:** Triggering that Job Template name (`02 - Parse ARF Reports & Extract Remediations` or `SCAP / 01 Triage and Route`) whenever Satellite posts a new ARF report webhook.
+
+<FollowUp label="Want me to show you how to wire the AAP Job Template to trigger the Jinja report automatically on new Satellite webhooks?" query="Show me how to wire the AAP Job Template to trigger the Jinja report automatically on new Satellite webhooks."/>
