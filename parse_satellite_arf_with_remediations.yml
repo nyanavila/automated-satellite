@@ -1,11 +1,4 @@
 ---
-
-### Step 2: Create the Main Playbook (`parse_satellite_arf_with_remediations.yml`)
-
-Save this complete playbook in your working directory:
-
-```yaml
----
 - name: Parse ARF Reports, Extract Ansible Remediations & Generate Report
   hosts: all
   become: true
@@ -55,24 +48,24 @@ Save this complete playbook in your working directory:
       when: latest_arf_id is not none
       register: arf_detail_response
 
-    - name: Extract failed rules, snippets, and reboot flags from fix metadata
+    - name: Extract failed rules, snippets, and reboot flags safely
       ansible.builtin.set_fact:
         failed_rules: >-
-          [
-            {% if arf_detail_response.json is defined and arf_detail_response.json.messages is defined %}
-              {% for msg in arf_detail_response.json.messages if msg.result == 'fail' %}
-                {% set snippet = msg.fixes.ansible | default('') %}
-                {% set needs_reboot = ('reboot' in snippet | lower) or ('grubby' in snippet | lower) or ('/etc/selinux/config' in snippet | lower) or ('kernel' in snippet | lower) %}
-                {
-                  "id": "{{ msg.rule_id | default('N/A') }}",
-                  "title": "{{ msg.title | default(msg.rule_id) }}",
-                  "severity": "{{ msg.severity | default('medium') }}",
-                  "snippet_requires_reboot": {{ needs_reboot | to_json }},
-                  "ansible_snippet": "{{ snippet | replace('\"', '\\\"') }}"
-                }{% if not loop.last %},{% endif %}
-              {% endfor %}
-            {% endif %}
-          ]
+          {% set rules = [] %}
+          {% if arf_detail_response.json is defined and arf_detail_response.json.messages is defined %}
+            {% for msg in arf_detail_response.json.messages if msg.result == 'fail' %}
+              {% set snippet = msg.fixes.ansible | default('') %}
+              {% set needs_reboot = ('reboot' in snippet | lower) or ('grubby' in snippet | lower) or ('/etc/selinux/config' in snippet | lower) or ('kernel' in snippet | lower) %}
+              {% set _ = rules.append({
+                'id': msg.rule_id | default('N/A'),
+                'title': msg.title | default(msg.rule_id | default('N/A')),
+                'severity': msg.severity | default('medium'),
+                'snippet_requires_reboot': needs_reboot,
+                'ansible_snippet': snippet
+              }) %}
+            {% endfor %}
+          {% endif %}
+          {{ rules }}
 
     # -------------------------------------------------------------------------
     # 3. Local Reboot Inspection
@@ -112,9 +105,9 @@ Save this complete playbook in your working directory:
     - name: Render template to Markdown file
       ansible.builtin.template:
         src: "templates/compliance_report.j2"
-        dest: "./compliance_remediation_summary.md"
+        dest: "/tmp/compliance_remediation_summary.md"
         mode: '0644'
 
     - name: Notify operator
       ansible.builtin.debug:
-        msg: "Report generated successfully at ./compliance_remediation_summary.md"
+        msg: "Report generated successfully at /tmp/compliance_remediation_summary.md"
