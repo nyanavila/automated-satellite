@@ -1,6 +1,6 @@
 ---
 - name: Remediate
-  hosts: "{{ dynamic_inventory_group | default(omit) }}"
+  hosts: "{{ dynamic_inventory_group | default('node4.example.com,node5.example.com,node6.example.com') }}"
   strategy: ansible.builtin.free
   gather_facts: true
   become: true
