@@ -28,6 +28,12 @@
 {% else %}
 No automated Ansible snippet provided for this rule.
 {% endif %}
+### Breakdown of those closing tags:
+
+1. **`{% endif %}`** – Closes the check for whether an individual rule has an `ansible_snippet`.
+2. **`{% endfor %}`** – Closes the loop iterating through every failed rule (`for rule in hostvars[host]['failed_rules']`).
+3. **`{% else %}` / `{% endif %}`** – Handles the fallback if `failed_rules` is empty (0 failed rules) and closes the `if hostvars[host]['failed_rules'] | length > 0` block.
+4. **`{% endfor %}`** – Closes the outer loop iterating over all target hosts (`for host in ansible_play_hosts`).
 
 {% endfor %}
 {% else %}
