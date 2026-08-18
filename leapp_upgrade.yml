@@ -1,35 +1,43 @@
 ---
-- name: Leapp OS Upgrade Execution
-  hosts: "{{ dynamic_inventory_group | default(omit) }}"
+- name: Leapp OS Upgrade Execution (RHEL 7.9 to 8.10)
+  hosts: "{{ dynamic_inventory_group | default('node4.example.com,node5.example.com,node6.example.com') }}"
   strategy: ansible.builtin.free
+  gather_facts: true
   become: true
   force_handlers: true
-  vars_files:
-    - "{{ playbook_dir }}/leapp_vars_810_92.yml"
+
   vars:
+    dynamic_inventory_group: "node4.example.com,node5.example.com,node6.example.com"
+    leapp_release: "8.10"
+    leapp_target_release: "8.10"
+    leapp_unsupported: true
+    LEAPP_UNSUPPORTED: "1"
+    leapp_custom_flags: "--tailoring-file /etc/leapp/files/rhel7_to_rhel8_tailoring.xml"
     leapp_include_delay: false
 
   pre_tasks:
-    - name: Include randomized delay before beginning upgrade
-      ansible.builtin.command: |
-        python3 -c 'import time;import random;zzzzz=random.uniform(15.0,60.0);time.sleep(zzzzz);print(zzzzz)'
-      delegate_to: localhost
-      connection: local
-      when: leapp_include_delay
-
-    - name: Ensure vdo package is present
-      ansible.builtin.dnf:
+    - name: "PRE-UPGRADE: Ensure vdo package is present using generic package manager"
+      ansible.builtin.package:
         name: vdo
         state: present
 
-    - name: Automatically answer check_vdo section in answerfile
+    - name: "PRE-UPGRADE: Answer Leapp confirmation dialogs in answerfile"
       ansible.builtin.command:
-        cmd: leapp answer --section check_vdo.confirm=True
+        cmd: "leapp answer --section {{ item }}=True"
+      loop:
+        - "remove_pam_pkcs11_module_check.confirm"
+        - "check_vdo.confirm"
       changed_when: false
       failed_when: false
 
+    - name: "PRE-UPGRADE: Clean stale Leapp scratch files and yum cache"
+      ansible.builtin.shell: |
+        rm -rf /var/lib/leapp/scratch/*
+        yum clean all
+      changed_when: false
+
   tasks:
-    - name: Perform OS upgrade
+    - name: Perform OS upgrade via infra.leapp.upgrade
       ansible.builtin.include_role:
         name: infra.leapp.upgrade
 ...
