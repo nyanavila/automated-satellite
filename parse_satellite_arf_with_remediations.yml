@@ -88,6 +88,6 @@
         dest: "/tmp/compliance_remediation_summary.md"
         mode: '0644'
 
-    - name: Notify operator
+    - name: Display summary report content in job output
       ansible.builtin.debug:
-        msg: "Report generated successfully at /tmp/compliance_remediation_summary.md"
+        msg: "{{ lookup('file', '/tmp/compliance_remediation_summary.md') }}"
