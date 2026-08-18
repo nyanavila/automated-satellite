@@ -14,7 +14,7 @@
     # -------------------------------------------------------------------------
     - name: Fetch latest ARF report from Satellite API
       ansible.builtin.uri:
-        url: "{{ satellite_url }}/api/v2/compliance/reports?search=host%20%3D%20{{ inventory_hostname }}&per_page=1&order=created_at%20DESC"
+        url: "{{ satellite_url }}/api/compliance/arf_reports?search=host%20%3D%20{{ inventory_hostname }}&per_page=1&order=created_at%20DESC"
         method: GET
         user: "{{ satellite_user }}"
         password: "{{ satellite_password }}"
@@ -32,11 +32,11 @@
         passed_rules_count: "{{ arf_api_response.json.results[0].passed_count | default(0) }}"
 
     # -------------------------------------------------------------------------
-    # 2. Fetch Detailed Rule Results & Parse Snippets for Reboot Flags
+    # 2. Fetch Detailed Rule Results & Parse Snippets
     # -------------------------------------------------------------------------
     - name: Fetch detailed report data including fix snippets
       ansible.builtin.uri:
-        url: "{{ satellite_url }}/api/v2/arf_reports/{{ latest_arf_id }}"
+        url: "{{ satellite_url }}/api/compliance/arf_reports/{{ latest_arf_id }}"
         method: GET
         user: "{{ satellite_user }}"
         password: "{{ satellite_password }}"
@@ -47,26 +47,6 @@
       delegate_to: localhost
       when: latest_arf_id is not none
       register: arf_detail_response
-
-    - name: Extract failed rules, snippets, and reboot flags safely
-      ansible.builtin.set_fact:
-        failed_rules: >-
-          {% set rules = [] %}
-          {% if arf_detail_response.json is defined and arf_detail_response.json.messages is defined %}
-            {% for msg in arf_detail_response.json.messages if msg.result == 'fail' %}
-              {% set snippet = msg.fixes.ansible | default('') %}
-              {% set needs_reboot = ('reboot' in snippet | lower) or ('grubby' in snippet | lower) or ('/etc/selinux/config' in snippet | lower) or ('kernel' in snippet | lower) %}
-              {% set _ = rules.append({
-                'id': msg.rule_id | default('N/A'),
-                'title': msg.title | default(msg.rule_id | default('N/A')),
-                'severity': msg.severity | default('medium'),
-                'snippet_requires_reboot': needs_reboot,
-                'ansible_snippet': snippet
-              }) %}
-            {% endfor %}
-          {% endif %}
-          {{ rules }}
-
     # -------------------------------------------------------------------------
     # 3. Local Reboot Inspection
     # -------------------------------------------------------------------------
