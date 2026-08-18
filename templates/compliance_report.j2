@@ -1,0 +1,26 @@
+# OpenSCAP Compliance & Remediation Assessment Report
+**Generated On:** {{ ansible_date_time.iso8601 }}
+**Satellite Host:** {{ satellite_url }}
+
+---
+
+{% for host in ansible_play_hosts %}
+## Host Summary: {{ host }}
+* **Operating System:** RHEL {{ hostvars[host]['ansible_distribution_major_version'] }}
+* **Satellite ARF Report ID:** {{ hostvars[host]['latest_arf_id'] }}
+* **Passed Rules:** {{ hostvars[host]['passed_rules_count'] }}
+* **Failed Rules:** {{ hostvars[host]['failed_rules_count'] }}
+* **Reboot Required:** **{{ 'YES' if hostvars[host]['reboot_needed'] else 'NO' }}**
+* **Reboot Reason:** {{ hostvars[host]['reboot_reason'] | trim }}
+
+### Top Failed Rules & Available Ansible Remediations
+{% if hostvars[host]['failed_rules'] | length > 0 %}
+{% for rule in hostvars[host]['failed_rules'] %}
+#### Rule: {{ rule.title }}
+* **Rule ID:** `{{ rule.id }}`
+* **Severity:** `{{ rule.severity | upper }}`
+
+{% if rule.ansible_snippet is defined and rule.ansible_snippet %}
+```yaml
+# Ansible Remediation Snippet
+{{ rule.ansible_snippet }}
