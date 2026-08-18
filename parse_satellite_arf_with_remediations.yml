@@ -89,4 +89,4 @@
       ansible.builtin.debug:
         msg: "{{ lookup('file', '/tmp/compliance_remediation_summary.md') }}"
       delegate_to: localhost
-      run_once: truep/compliance_remediation_summary.md') }}"
+      run_once: true
