@@ -21,6 +21,7 @@
       ansible.builtin.dnf:
         name: vdo
         state: present
+      when: ansible_distribution_major_version | int >= 8
 
     - name: Automatically answer check_vdo prompt in Leapp answerfile
       ansible.builtin.command:
