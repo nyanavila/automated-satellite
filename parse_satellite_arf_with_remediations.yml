@@ -74,20 +74,19 @@
           System running on current kernel/libraries.
           {% endif %}
 
-# -----------------------------------------------------------------------------
-# 4. Generate Combined Summary Report on Controller / AAP
-# -----------------------------------------------------------------------------
-- name: Render Executive Compliance & Remediation Report
-  hosts: localhost
-  connection: local
-  gather_facts: false
-  tasks:
-    - name: Render template to Markdown file
+# -------------------------------------------------------------------------
+    # 4. Generate Combined Summary Report on Controller / AAP
+    # -------------------------------------------------------------------------
+    - name: Render Markdown template to file
       ansible.builtin.template:
         src: "templates/compliance_report.j2"
         dest: "/tmp/compliance_remediation_summary.md"
         mode: '0644'
+      delegate_to: localhost
+      run_once: true
 
-    - name: Display summary report content in job output
+    - name: Display summary report content directly in AAP job logs
       ansible.builtin.debug:
         msg: "{{ lookup('file', '/tmp/compliance_remediation_summary.md') }}"
+      delegate_to: localhost
+      run_once: truep/compliance_remediation_summary.md') }}"
