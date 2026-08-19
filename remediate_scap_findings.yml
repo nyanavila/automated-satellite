@@ -31,12 +31,12 @@
       register: arf_search
       when: latest_arf_id is not defined
 
-    - name: Set ARF facts
-      ansible.builtin.set_fact:
-        latest_arf_id: "{{ arf_search.json.results[0].id }}"
-        failed_rules_count: "{{ arf_search.json.results[0].failed | default(0) }}"
-      when: latest_arf_id is not defined
-
+    - name: Fail gracefully if no ARF report found
+      ansible.builtin.meta: end_host
+      when:
+        - latest_arf_id is not defined
+        - arf_search.json.results | length == 0
+        
     - name: Download ARF report
       ansible.builtin.uri:
         url: "{{ satellite_url }}/api/compliance/arf_reports/{{ latest_arf_id }}/download"
