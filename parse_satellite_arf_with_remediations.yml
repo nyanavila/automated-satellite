@@ -37,12 +37,20 @@
         msg: "No ARF report found for {{ inventory_hostname }} policy={{ target_policy }}"
       when: arf_search.json.results | length == 0
 
+    - name: Fail gracefully if no ARF report found
+      ansible.builtin.meta: end_host
+      when:
+        - latest_arf_id is not defined
+        - arf_search.json.results | length == 0
+
     - name: Set ARF facts
       ansible.builtin.set_fact:
         latest_arf_id: "{{ arf_search.json.results[0].id }}"
-        passed_rules_count: "{{ arf_search.json.results[0].passed | default(0) }}"
         failed_rules_count: "{{ arf_search.json.results[0].failed | default(0) }}"
-
+      when:
+        - latest_arf_id is not defined
+        - arf_search.json.results | length > 0
+        
     - name: Download ARF report bzip2
       ansible.builtin.uri:
         url: "{{ satellite_url }}/api/compliance/arf_reports/{{ latest_arf_id }}/download"
