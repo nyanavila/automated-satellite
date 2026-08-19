@@ -29,14 +29,16 @@
         validate_certs: false
         status_code: [200]
       register: arf_search
-      when: latest_arf_id is not defined
 
-    - name: Fail gracefully if no ARF report found
+    - name: Skip host if no ARF report found
       ansible.builtin.meta: end_host
-      when:
-        - latest_arf_id is not defined
-        - arf_search.json.results | length == 0
-        
+      when: arf_search.json.results | length == 0
+
+    - name: Set ARF facts
+      ansible.builtin.set_fact:
+        latest_arf_id: "{{ arf_search.json.results[0].id }}"
+        failed_rules_count: "{{ arf_search.json.results[0].failed | default(0) }}"
+
     - name: Download ARF report
       ansible.builtin.uri:
         url: "{{ satellite_url }}/api/compliance/arf_reports/{{ latest_arf_id }}/download"
@@ -49,14 +51,12 @@
         dest: "/tmp/arf_{{ inventory_hostname }}_{{ latest_arf_id }}.xml.bz2"
         status_code: [200]
       delegate_to: localhost
-      when: failed_rules is not defined
 
     - name: Decompress ARF report
       ansible.builtin.command:
         cmd: "bunzip2 -f /tmp/arf_{{ inventory_hostname }}_{{ latest_arf_id }}.xml.bz2"
       delegate_to: localhost
       changed_when: true
-      when: failed_rules is not defined
 
     - name: Parse ARF XML
       ansible.builtin.command:
@@ -64,12 +64,10 @@
       register: parsed_rules
       delegate_to: localhost
       changed_when: false
-      when: failed_rules is not defined
 
     - name: Set failed rules fact
       ansible.builtin.set_fact:
         failed_rules: "{{ parsed_rules.stdout | from_json }}"
-      when: failed_rules is not defined
 
     # ── Build remediation batches ─────────────────────────────────────────────
     - name: Build auto-remediate list (has snippet + no reboot + in target severities)
