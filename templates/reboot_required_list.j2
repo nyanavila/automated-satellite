@@ -1,0 +1,27 @@
+# Pending System Reboot Action Notice
+**Generated On:** {{ hostvars[groups['all'][0]]['ansible_date_time']['iso8601'] | default('N/A') }}
+
+---
+
+### Systems Requiring Maintenance Reboot Window
+
+{% set reboot_hosts = [] %}
+{% for host in ansible_play_hosts %}
+  {% if hostvars[host]['reboot_needed'] | default(false) %}
+    {% set _ = reboot_hosts.append(host) %}
+  {% endif %}
+{% endfor %}
+
+{% if reboot_hosts | length > 0 %}
+| Hostname | RHEL Version | Satellite ARF ID | Reboot Reason |
+| :--- | :--- | :--- | :--- |
+{% for host in reboot_hosts %}
+| **{{ host }}** | RHEL {{ hostvars[host]['ansible_distribution_major_version'] | default('N/A') }} | {{ hostvars[host]['latest_arf_id'] | default('N/A') }} | {{ hostvars[host]['reboot_reason'] | default('Pending reboot flag or kernel update detected.') | trim }} |
+{% endfor %}
+
+---
+**Action Required:** Schedule a maintenance window for the **{{ reboot_hosts | length }}** host(s) listed above.
+
+{% else %}
+✅ **No systems currently require a reboot.** All evaluated RHEL hosts are running on active kernel and library configurations.
+{% endif %}
