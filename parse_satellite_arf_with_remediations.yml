@@ -6,50 +6,57 @@
     satellite_url: "https://satellite.2hzls.sandbox223.opentlc.com"
 
   tasks:
-    - name: Query Satellite API for host compliance ARF reports
+    - name: Query Satellite API for host's latest non-compliant ARF report
       ansible.builtin.uri:
-        url: "{{ satellite_url }}/api/compliance/arf_reports?search=host%3D%22{{ inventory_hostname }}%22&per_page=10"
+        url: "{{ satellite_url }}/api/compliance/arf_reports?search=host%3D%22{{ inventory_hostname }}%22%20and%20last_for%3Dhost%20and%20compliance_status%3Dincompliant&per_page=1&order=reported%20DESC"
         method: GET
         user: "{{ satellite_user }}"
         password: "{{ satellite_password }}"
         force_basic_auth: true
         validate_certs: false
         status_code: [200]
-      register: arf_search_raw
+      register: arf_search_incompliant
 
-    - name: Fetch details for returned reports to locate populated compliance failures
+    - name: Fallback query for host's latest report if no incompliant report found
       ansible.builtin.uri:
-        url: "{{ satellite_url }}/api/compliance/arf_reports/{{ item.id }}"
+        url: "{{ satellite_url }}/api/compliance/arf_reports?search=host%3D%22{{ inventory_hostname }}%22%20and%20last_for%3Dhost&per_page=1&order=reported%20DESC"
         method: GET
         user: "{{ satellite_user }}"
         password: "{{ satellite_password }}"
         force_basic_auth: true
         validate_certs: false
         status_code: [200]
-      loop: "{{ arf_search_raw.json.results }}"
-      register: arf_details_list
+      register: arf_search_fallback
+      when: arf_search_incompliant.json.results | length == 0
 
-    - name: Select first report that has failed rules
+    - name: Determine target ARF Report ID
       ansible.builtin.set_fact:
-        selected_arf_detail: >-
+        target_arf_id: >-
           {{
-            (arf_details_list.results 
-              | map(attribute='json') 
-              | selectattr('failed_count', 'defined') 
-              | selectattr('failed_count', 'greaterthan', 0) 
-              | list 
-              | first)
-            | default(arf_details_list.results[0].json)
+            (arf_search_incompliant.json.results[0].id)
+            if (arf_search_incompliant.json.results | length > 0)
+            else (arf_search_fallback.json.results[0].id)
           }}
+
+    - name: Fetch detailed OpenSCAP ARF report from Satellite
+      ansible.builtin.uri:
+        url: "{{ satellite_url }}/api/compliance/arf_reports/{{ target_arf_id }}"
+        method: GET
+        user: "{{ satellite_user }}"
+        password: "{{ satellite_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code: [200]
+      register: arf_detail_raw
 
     - name: Extract compliance facts and failed rule snippets
       ansible.builtin.set_fact:
-        latest_arf_id: "{{ selected_arf_detail.id }}"
-        passed_rules_count: "{{ selected_arf_detail.passed_count | default(0) }}"
-        failed_rules_count: "{{ selected_arf_detail.failed_count | default(0) }}"
+        latest_arf_id: "{{ target_arf_id }}"
+        passed_rules_count: "{{ arf_detail_raw.json.passed_count | default(0) }}"
+        failed_rules_count: "{{ arf_detail_raw.json.failed_count | default(0) }}"
         failed_rules: >-
           {{
-            selected_arf_detail.rules
+            arf_detail_raw.json.rules
             | default([])
             | selectattr('result', 'defined')
             | selectattr('result', 'equalto', 'fail')
@@ -84,14 +91,9 @@
           - "REASON:                   {{ reboot_reason }}"
           - "=========================================================="
 
-- name: Render Compliance Remediation Matrix Document
-  hosts: localhost
-  connection: local
-  gather_facts: false
-  vars:
-    satellite_url: "https://satellite.2hzls.sandbox223.opentlc.com"
-
-  tasks:
+    # -------------------------------------------------------------------------
+    # REPORT GENERATION TASKS (Delegated to Localhost within main play)
+    # -------------------------------------------------------------------------
     - name: Render Jinja2 Remediation Matrix Template
       ansible.builtin.template:
         src: templates/remediation_matrix.j2
