@@ -1,58 +1,55 @@
-# OpenSCAP Compliance Remediation Matrix
+# OpenSCAP Compliance Remediation Summary
 **Generated On:** {{ hostvars[groups['all'][0]]['ansible_date_time']['iso8601'] | default('N/A') }}
 **Satellite Host:** {{ satellite_url }}
 
 ---
 
-## 📋 Remediation Matrix by Host
+## Remediation Matrix by Host
 
 {% for host in ansible_play_hosts %}
 {% set hvars = hostvars[host] %}
 {% set failed_rules = hvars['failed_rules'] | default([]) %}
 
 ### Host: {{ host }} (RHEL {{ hvars['ansible_distribution_major_version'] | default('N/A') }})
-**Satellite ARF ID:** {{ hvars['latest_arf_id'] | default('N/A') }} | **Total Failures:** {{ failed_rules | length }}
 
-{% if failed_rules | length > 0 %}
-| Severity | Rule Title / ID | Requires Reboot? | Ansible Remediation Snippet Summary |
-| :---: | :--- | :---: | :--- |
-{% for rule in failed_rules %}
-{% set tags_str = (rule.tags | default([])) | join(' ') %}
-{% set snippet_str = rule.ansible_snippet | default('') %}
-{% set is_reboot = 'YES' if ('no_reboot_needed' not in tags_str and ('reboot' in snippet_str or 'kernel' in snippet_str)) else 'NO' %}
-{% set sev_icon = '🔴 HIGH' if rule.severity == 'high' else ('🟡 MED' if rule.severity == 'medium' else '🟢 LOW') %}
-{% set clean_snippet = snippet_str | replace('|', '&#124;') | replace('\n', ' ') | truncate(80, true, '...') %}
-| **{{ sev_icon }}** | **{{ rule.title | default(rule.id) }}**<br>`{{ rule.id }}` | **{{ is_reboot }}** | {% if snippet_str %}`{{ clean_snippet }}`{% else %}\*Manual Remediation Required\*{% endif %} |
-{% endfor %}
+**Satellite ARF ID:** {{ hvars['latest_arf_id'] | default('N/A') }} | **Total failures:** {{ failed_rules | length }} | **Reboot required:** {{ 'YES' if hvars['reboot_needed'] | default(false) else 'NO' }}
 
+{% if failed_rules | length == 0 %}
+No failed compliance rules for this host.
 {% else %}
-✅ **No failed compliance rules for this host.**
+| Severity | Rule title / ID | Reboot? | Remediation available? |
+| :---: | :--- | :---: | :---: |
+{% for rule in failed_rules %}
+{% set snippet = rule.ansible_snippet | default('') %}
+{% set needs_reboot = 'no_reboot_needed' not in (rule.tags | default([]) | join(' ')) and ('reboot' in snippet or 'kernel' in snippet) %}
+{% set sev = rule.severity | default('unknown') | upper %}
+| {{ sev }} | **{{ rule.title | default(rule.id) }}** `{{ rule.id }}` | {{ 'YES' if needs_reboot else 'NO' }} | {{ 'YES' if snippet else 'Manual' }} |
+{% endfor %}
 {% endif %}
 
 ---
 {% endfor %}
 
-## 🛠️ Detailed Remediation Code Blocks
+## Executable Playbook Snippets
 
 {% for host in ansible_play_hosts %}
 {% set hvars = hostvars[host] %}
 {% set failed_rules = hvars['failed_rules'] | default([]) %}
-{% if failed_rules | length > 0 %}
+{% set rules_with_snippets = failed_rules | selectattr('ansible_snippet', 'defined') | list %}
+{% if rules_with_snippets | length > 0 %}
 
-### {{ host }} — Executable Playbook Snippets
+### {{ host }}
 
-{% for rule in failed_rules %}
-{% if rule.ansible_snippet %}
-#### [{{ rule.severity | upper }}] {{ rule.title | default(rule.id) }}
-
+{% for rule in rules_with_snippets %}
+#### [{{ rule.severity | default('unknown') | upper }}] {{ rule.title | default(rule.id) }}
 
 ```yaml
 # Host: {{ host }}
 # Rule ID: {{ rule.id }}
-# Severity: {{ rule.severity }}
+# Severity: {{ rule.severity | default('unknown') }}
 {{ rule.ansible_snippet }}
-{% endif %}
-{% endfor %}
+```
 
+{% endfor %}
 {% endif %}
 {% endfor %}
