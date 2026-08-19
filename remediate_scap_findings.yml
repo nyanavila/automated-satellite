@@ -34,10 +34,19 @@
       ansible.builtin.meta: end_host
       when: arf_search.json.results | length == 0
 
+    - name: Fail gracefully if no ARF report found
+      ansible.builtin.meta: end_host
+      when:
+        - latest_arf_id is not defined
+        - arf_search.json.results | length == 0
+
     - name: Set ARF facts
       ansible.builtin.set_fact:
         latest_arf_id: "{{ arf_search.json.results[0].id }}"
         failed_rules_count: "{{ arf_search.json.results[0].failed | default(0) }}"
+      when:
+        - latest_arf_id is not defined
+        - arf_search.json.results | length > 0
 
     - name: Download ARF report
       ansible.builtin.uri:
@@ -57,6 +66,14 @@
         cmd: "bunzip2 -f /tmp/arf_{{ inventory_hostname }}_{{ latest_arf_id }}.xml.bz2"
       delegate_to: localhost
       changed_when: true
+
+    - name: Copy parse_arf.py to controller
+      ansible.builtin.copy:
+        src: files/parse_arf.py
+        dest: /tmp/parse_arf.py
+        mode: '0755'
+      delegate_to: localhost
+      run_once: true
 
     - name: Parse ARF XML
       ansible.builtin.command:
