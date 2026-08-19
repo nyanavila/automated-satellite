@@ -97,7 +97,11 @@
         src: templates/remediation_matrix.j2
         dest: /tmp/remediation_matrix.md
         mode: '0644'
+      delegate_to: localhost
+      run_once: true
 
     - name: Display Rendered Remediation Matrix in AAP Job Output
       ansible.builtin.debug:
         msg: "{{ lookup('file', '/tmp/remediation_matrix.md').split('\n') }}"
+      delegate_to: localhost
+      run_once: true
