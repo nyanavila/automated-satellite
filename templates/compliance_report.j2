@@ -1,4 +1,3 @@
-cat << 'EOF' > templates/compliance_report.j2
 # OpenSCAP Compliance, Severity Matrix & Reboot Assessment Report
 **Generated On:** {{ hostvars[groups['all'][0]]['ansible_date_time']['iso8601'] | default('N/A') }}
 **Satellite Host:** {{ satellite_url }}
@@ -75,88 +74,12 @@ cat << 'EOF' > templates/compliance_report.j2
 {% if rule.ansible_snippet %}
 ```yaml
 # Ansible Remediation Snippet (High Severity)
-#### 🔴 HIGH Severity Failures
-{% if high_rules | length > 0 %}
-{% for rule in high_rules %}
-##### Rule: {{ rule.title | default(rule.id) }}
-* **Rule ID:** `{{ rule.id }}`
-* **Severity:** `HIGH`
-* **Snippet Requires Reboot:** **{% if 'no_reboot_needed' not in (rule.tags | default([])) and ('reboot' in (rule.ansible_snippet | default('')) or 'kernel' in (rule.ansible_snippet | default(''))) %}YES{% else %}NO{% endif %}**
-
-{% if rule.ansible_snippet %}
-```yaml
-## Ansible Remediation Snippet (High Severity)
 {{ rule.ansible_snippet }}
 {% else %}
-##No automated Ansible snippet provided for this rule.
+No automated Ansible snippet provided for this rule.
 {% endif %}
 
 {% endfor %}
 {% else %}
 No High severity failures for this host.
 {% endif %}
-
-##🟡 MEDIUM Severity Failures
-{% if med_rules | length > 0 %}
-{% for rule in med_rules %}
-
-Rule: {{ rule.title | default(rule.id) }}
-Rule ID: {{ rule.id }}
-
-##Severity: MEDIUM
-
-##Snippet Requires Reboot: 
-{% if 'no_reboot_needed' not in (rule.tags | default([])) and ('reboot' in (rule.ansible_snippet | default('')) or 'kernel' in (rule.ansible_snippet | default(''))) %}YES{% else %}NO{% endif %}
-
-{% if rule.ansible_snippet %}
-
-## Ansible Remediation Snippet (Medium Severity)
-{{ rule.ansible_snippet }}
-{% else %}
-##No automated Ansible snippet provided for this rule.
-{% endif %}
-
-{% endfor %}
-{% else %}
-##No Medium severity failures for this host.
-{% endif %}
-
-##🟢 LOW Severity Failures
-{% if low_rules | length > 0 %}
-{% for rule in low_rules %}
-
-##Rule: {{ rule.title | default(rule.id) }}
-Rule ID: {{ rule.id }}
-
-Severity: LOW
-
-Snippet Requires Reboot: {% if 'no_reboot_needed' not in (rule.tags | default([])) and ('reboot' in (rule.ansible_snippet | default(''))) %}YES{% else %}NO{% endif %}
-
-{% if rule.ansible_snippet %}
-
-## Ansible Remediation Snippet (Low Severity)
-{{ rule.ansible_snippet }}
-{% else %}
-##No automated Ansible snippet provided for this rule.
-{% endif %}
-
-{% endfor %}
-{% else %}
-##No Low severity failures for this host.
-{% endif %}
-
-
----
-
-## 🔍 Breakdown of What Each Control Block Does
-
-| Jinja2 Control Structure | Purpose & Function |
-| :--- | :--- |
-| `{% if rule.ansible_snippet %}` | Checks if Satellite provided an actionable Ansible playbook task for the rule. |
-| `{% else %} No snippet... {% endif %}` | Outputs a fallback message if no fix snippet exists for the failed rule. |
-| `{% endfor %}` | Closes the loop iterating through individual failed rules in that severity tier. |
-| `{% else %} No [Severity] failures... {% endif %}` | Outputs a clean status message when a host has **0** failed rules for that tier. |
-| `{% endif %}` | Closes the main conditional block for the severity group. |
-
----
-{{ rule.ansible_snippet }}
