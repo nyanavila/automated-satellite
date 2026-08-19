@@ -1,8 +1,7 @@
 ---
-- name: Parse ARF Reports, Extract Ansible Remediations & Generate Report
+- name: Parse Satellite ARF Compliance Reports & Evaluate Reboot Status
   hosts: all
   become: true
-  gather_facts: true
   vars:
     satellite_url: "https://satellite.2hzls.sandbox223.opentlc.com"
     satellite_user: "admin"
@@ -10,9 +9,9 @@
 
   tasks:
     # -------------------------------------------------------------------------
-    # 1. Fetch Latest ARF Report Summary from Satellite
+    # 1. Query Satellite ARF Reports API
     # -------------------------------------------------------------------------
-    - name: Fetch latest ARF report from Satellite API
+    - name: Get ARF Report summary for target host from Satellite API
       ansible.builtin.uri:
         url: "{{ satellite_url }}/api/compliance/arf_reports?search=host%20%3D%20{{ inventory_hostname }}&per_page=1&order=reported%20DESC"
         method: GET
@@ -25,14 +24,14 @@
       delegate_to: localhost
       register: arf_api_response
 
-    - name: Extract report metrics and ID
+    - name: Extract latest ARF report ID and metrics
       ansible.builtin.set_fact:
         latest_arf_id: "{{ arf_api_response.json.results[0].id | default(none) }}"
         failed_rules_count: "{{ arf_api_response.json.results[0].failed_count | default(0) }}"
         passed_rules_count: "{{ arf_api_response.json.results[0].passed_count | default(0) }}"
 
     # -------------------------------------------------------------------------
-    # 2. Fetch Detailed Rule Results & Parse Snippets
+    # 2. Fetch Detailed Report Data (Failed Rules & Remediation Snippets)
     # -------------------------------------------------------------------------
     - name: Fetch detailed report data including fix snippets
       ansible.builtin.uri:
@@ -47,37 +46,58 @@
       delegate_to: localhost
       when: latest_arf_id is not none
       register: arf_detail_response
+
+    - name: Extract failed rules array
+      ansible.builtin.set_fact:
+        failed_rules: "{{ arf_detail_response.json.failed_rules | default([]) }}"
+      when: arf_detail_response is not skipped and arf_detail_response.json is defined
+
     # -------------------------------------------------------------------------
-    # 3. Local Reboot Inspection
+    # 3. Check System-Level Reboot Triggers
     # -------------------------------------------------------------------------
-    - name: Check if updated kernel/libraries require reboot
+    - name: Check if updated kernel/system libraries require reboot
       ansible.builtin.command:
         cmd: needs-restarting -r
       register: needs_restarting_check
       failed_when: false
       changed_when: false
 
-    - name: Check for pending reboot flag file
+    - name: Check pending reboot flag from systemd or OpenSCAP remediations
       ansible.builtin.stat:
         path: /var/run/reboot-required
       register: reboot_flag_file
 
-    - name: Calculate reboot necessity
+    # -------------------------------------------------------------------------
+    # 4. Decision Logic Matrix
+    # -------------------------------------------------------------------------
+    - name: Calculate Reboot Decision
       ansible.builtin.set_fact:
         reboot_needed: "{{ (needs_restarting_check.rc == 1) or (reboot_flag_file.stat.exists) }}"
         reboot_reason: >-
           {% if needs_restarting_check.rc == 1 %}
-          Kernel or core packages updated; system reboot required.
+          Kernel or core glibc/systemd updates require a system reboot.
           {% elif reboot_flag_file.stat.exists %}
-          OpenSCAP remediation flag file is present.
+          Compliance remediation placed a pending reboot flag file.
           {% else %}
-          System running on current kernel/libraries.
+          System is running on latest booted kernel/libraries. No reboot required.
           {% endif %}
 
-# -------------------------------------------------------------------------
-    # 4. Generate Combined Summary Report on Controller / AAP
+    - name: Display Host Assessment Summary
+      ansible.builtin.debug:
+        msg:
+          - "=========================================================="
+          - "HOST:                     {{ inventory_hostname }} (RHEL {{ ansible_distribution_major_version }})"
+          - "LATEST ARF REPORT ID:     {{ latest_arf_id }}"
+          - "PASSED RULES:             {{ passed_rules_count }}"
+          - "FAILED RULES:             {{ failed_rules_count }}"
+          - "REBOOT REQUIRED:          {{ 'YES' if reboot_needed else 'NO' }}"
+          - "REASON:                   {{ reboot_reason | trim }}"
+          - "=========================================================="
+
     # -------------------------------------------------------------------------
-    - name: Render Markdown template to file
+    # 5. Generate Dual Reports (Executive Summary & Reboot-Only List)
+    # -------------------------------------------------------------------------
+    - name: Render Executive Compliance Report
       ansible.builtin.template:
         src: "templates/compliance_report.j2"
         dest: "/tmp/compliance_remediation_summary.md"
@@ -85,8 +105,22 @@
       delegate_to: localhost
       run_once: true
 
-    - name: Display summary report content directly in AAP job logs
+    - name: Render Reboot-Required List
+      ansible.builtin.template:
+        src: "templates/reboot_required_list.j2"
+        dest: "/tmp/reboot_required_list.md"
+        mode: '0644'
+      delegate_to: localhost
+      run_once: true
+
+    - name: Display Executive Compliance Report in AAP Logs
       ansible.builtin.debug:
         msg: "{{ lookup('file', '/tmp/compliance_remediation_summary.md') }}"
+      delegate_to: localhost
+      run_once: true
+
+    - name: Display Reboot-Required Notice in AAP Logs
+      ansible.builtin.debug:
+        msg: "{{ lookup('file', '/tmp/reboot_required_list.md') }}"
       delegate_to: localhost
       run_once: true
