@@ -1,0 +1,266 @@
+---
+- name: Remediate SCAP findings from Satellite ARF reports
+  hosts: all
+  gather_facts: true
+  become: true
+  vars:
+    satellite_url: "https://satellite.2hzls.sandbox223.opentlc.com"
+    target_policy: >-
+      {{
+        'Freddie-CIS-BCS-Policy-RHEL9'
+        if ansible_distribution_major_version == '9'
+        else 'Freddie-CIS-BCS-Policy'
+      }}
+    auto_remediate_severity:
+      - high
+      - medium
+    dry_run: false
+
+  tasks:
+
+    # ── Reuse facts from parse playbook if already run ────────────────────────
+    - name: Query Satellite for latest ARF report
+      ansible.builtin.uri:
+        url: "{{ satellite_url }}/api/compliance/arf_reports?search=host%3D%22{{ inventory_hostname }}%22+and+policy%3D%22{{ target_policy | urlencode }}%22+and+last_for%3Dhost&per_page=1&order=reported+DESC"
+        method: GET
+        user: "{{ satellite_user }}"
+        password: "{{ satellite_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code: [200]
+      register: arf_search
+      when: latest_arf_id is not defined
+
+    - name: Set ARF facts
+      ansible.builtin.set_fact:
+        latest_arf_id: "{{ arf_search.json.results[0].id }}"
+        failed_rules_count: "{{ arf_search.json.results[0].failed | default(0) }}"
+      when: latest_arf_id is not defined
+
+    - name: Download ARF report
+      ansible.builtin.uri:
+        url: "{{ satellite_url }}/api/compliance/arf_reports/{{ latest_arf_id }}/download"
+        method: GET
+        user: "{{ satellite_user }}"
+        password: "{{ satellite_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        return_content: true
+        dest: "/tmp/arf_{{ inventory_hostname }}_{{ latest_arf_id }}.xml.bz2"
+        status_code: [200]
+      delegate_to: localhost
+      when: failed_rules is not defined
+
+    - name: Decompress ARF report
+      ansible.builtin.command:
+        cmd: "bunzip2 -f /tmp/arf_{{ inventory_hostname }}_{{ latest_arf_id }}.xml.bz2"
+      delegate_to: localhost
+      changed_when: true
+      when: failed_rules is not defined
+
+    - name: Parse ARF XML
+      ansible.builtin.command:
+        cmd: "python3 /tmp/parse_arf.py /tmp/arf_{{ inventory_hostname }}_{{ latest_arf_id }}.xml"
+      register: parsed_rules
+      delegate_to: localhost
+      changed_when: false
+      when: failed_rules is not defined
+
+    - name: Set failed rules fact
+      ansible.builtin.set_fact:
+        failed_rules: "{{ parsed_rules.stdout | from_json }}"
+      when: failed_rules is not defined
+
+    # ── Build remediation batches ─────────────────────────────────────────────
+    - name: Build auto-remediate list (has snippet + no reboot + in target severities)
+      ansible.builtin.set_fact:
+        remediate_now: >-
+          {{
+            failed_rules
+            | selectattr('has_snippet', 'equalto', true)
+            | selectattr('needs_reboot', 'equalto', false)
+            | selectattr('severity', 'in', auto_remediate_severity)
+            | list
+          }}
+        remediate_reboot: >-
+          {{
+            failed_rules
+            | selectattr('has_snippet', 'equalto', true)
+            | selectattr('needs_reboot', 'equalto', true)
+            | selectattr('severity', 'in', auto_remediate_severity)
+            | list
+          }}
+        manual_required: >-
+          {{
+            failed_rules
+            | selectattr('has_snippet', 'equalto', false)
+            | list
+          }}
+
+    - name: Show remediation plan
+      ansible.builtin.debug:
+        msg:
+          - "HOST:                  {{ inventory_hostname }}"
+          - "Auto-remediate now:    {{ remediate_now | length }} rules"
+          - "Remediate then reboot: {{ remediate_reboot | length }} rules"
+          - "Manual intervention:   {{ manual_required | length }} rules"
+          - "DRY RUN:               {{ dry_run }}"
+
+    # ── Write snippets to individual playbook files ───────────────────────────
+    - name: Write remediation snippet files to controller
+      ansible.builtin.copy:
+        content: |
+          ---
+          # Auto-generated remediation for {{ item.id }}
+          # Rule: {{ item.title }}
+          # Severity: {{ item.severity }}
+          # Needs reboot: {{ item.needs_reboot }}
+          # Host: {{ inventory_hostname }}
+          - hosts: "{{ inventory_hostname }}"
+            become: true
+            gather_facts: true
+            tasks:
+          {{ item.ansible_snippet | indent(4, first=true) }}
+        dest: "/tmp/remediation_{{ inventory_hostname }}_{{ item.id | regex_replace('[^a-zA-Z0-9]', '_') }}.yml"
+        mode: '0644'
+      loop: "{{ remediate_now + remediate_reboot }}"
+      loop_control:
+        label: "{{ item.id }}"
+      delegate_to: localhost
+      when: item.ansible_snippet | length > 0
+
+    # ── Execute no-reboot remediations inline ────────────────────────────────
+    - name: Apply configure_crypto_policy
+      block:
+        - name: Set crypto policy fact
+          ansible.builtin.set_fact:
+            var_system_crypto_policy: "DEFAULT:NO-SHA1"
+
+        - name: Configure system cryptography policy
+          ansible.builtin.lineinfile:
+            path: /etc/crypto-policies/config
+            regexp: '^(?!#)(\S+)$'
+            line: "{{ var_system_crypto_policy }}"
+            create: true
+
+        - name: Apply crypto policy at runtime
+          ansible.builtin.command:
+            cmd: "/usr/bin/update-crypto-policies --set {{ var_system_crypto_policy }}"
+          changed_when: true
+      when:
+        - not dry_run
+        - failed_rules | selectattr('id', 'equalto', 'xccdf_org.ssgproject.content_rule_configure_crypto_policy') | list | length > 0
+
+    - name: Apply no_empty_passwords
+      ansible.builtin.replace:
+        path: /etc/pam.d/system-auth
+        regexp: 'nullok'
+        replace: ''
+      when:
+        - not dry_run
+        - failed_rules | selectattr('id', 'equalto', 'xccdf_org.ssgproject.content_rule_no_empty_passwords') | list | length > 0
+
+    - name: Apply sshd_disable_empty_passwords
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitEmptyPasswords'
+        line: 'PermitEmptyPasswords no'
+        state: present
+        backup: true
+      when:
+        - not dry_run
+        - failed_rules | selectattr('id', 'equalto', 'xccdf_org.ssgproject.content_rule_sshd_disable_empty_passwords') | list | length > 0
+      notify: restart sshd
+
+    - name: Apply selinux_state enforcing
+      ansible.posix.selinux:
+        policy: targeted
+        state: enforcing
+      when:
+        - not dry_run
+        - failed_rules | selectattr('id', 'equalto', 'xccdf_org.ssgproject.content_rule_selinux_state') | list | length > 0
+
+    # ── Run any remaining snippets dynamically via include ───────────────────
+    - name: Apply remaining auto-remediate snippets via AAP
+      ansible.builtin.command:
+        cmd: >
+          ansible-playbook
+          -i "{{ inventory_hostname }},"
+          /tmp/remediation_{{ inventory_hostname }}_{{ item.id | regex_replace('[^a-zA-Z0-9]', '_') }}.yml
+      loop: >-
+        {{
+          remediate_now
+          | rejectattr('id', 'in', [
+              'xccdf_org.ssgproject.content_rule_configure_crypto_policy',
+              'xccdf_org.ssgproject.content_rule_no_empty_passwords',
+              'xccdf_org.ssgproject.content_rule_sshd_disable_empty_passwords',
+              'xccdf_org.ssgproject.content_rule_selinux_state'
+            ])
+          | list
+        }}
+      loop_control:
+        label: "{{ item.id }}"
+      delegate_to: localhost
+      when:
+        - not dry_run
+        - item.has_snippet
+      register: dynamic_remediation
+      ignore_errors: true
+
+    # ── Manual rules report ───────────────────────────────────────────────────
+    - name: Report rules requiring manual intervention
+      ansible.builtin.debug:
+        msg:
+          - "MANUAL INTERVENTION REQUIRED"
+          - "Rule:     {{ item.title }}"
+          - "ID:       {{ item.id }}"
+          - "Severity: {{ item.severity | upper }}"
+          - "Action:   Review Red Hat KB and apply manually"
+      loop: "{{ manual_required }}"
+      loop_control:
+        label: "{{ item.id }}"
+
+    # ── Reboot batch — write plan, do not execute automatically ──────────────
+    - name: Write reboot-required remediation plan
+      ansible.builtin.copy:
+        content: |
+          # Reboot-required remediations for {{ inventory_hostname }}
+          # Apply these during your next maintenance window
+          # Rules: {{ remediate_reboot | map(attribute='title') | join(', ') }}
+          {% for rule in remediate_reboot %}
+
+          ---
+          # {{ rule.title }} ({{ rule.severity | upper }})
+          {{ rule.ansible_snippet }}
+          {% endfor %}
+        dest: "/tmp/reboot_plan_{{ inventory_hostname }}.yml"
+        mode: '0644'
+      delegate_to: localhost
+      when: remediate_reboot | length > 0
+
+    - name: Show reboot plan summary
+      ansible.builtin.debug:
+        msg:
+          - "{{ remediate_reboot | length }} rules require reboot after remediation"
+          - "Reboot plan written to: /tmp/reboot_plan_{{ inventory_hostname }}.yml"
+          - "Apply during next maintenance window"
+      when: remediate_reboot | length > 0
+
+    # ── Trigger new scan to verify remediations ───────────────────────────────
+    - name: Trigger Satellite compliance re-scan
+      ansible.builtin.uri:
+        url: "{{ satellite_url }}/api/hosts/{{ inventory_hostname }}/compliance/schedule"
+        method: POST
+        user: "{{ satellite_user }}"
+        password: "{{ satellite_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code: [200, 201, 202]
+      ignore_errors: true
+      when: not dry_run
+
+  handlers:
+    - name: restart sshd
+      ansible.builtin.service:
+        name: sshd
+        state: restarted
