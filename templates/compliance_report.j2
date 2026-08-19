@@ -13,43 +13,16 @@
 * **OS Kernel Reboot Required:** **{{ 'YES' if hostvars[host]['reboot_needed'] | default(false) else 'NO' }}**
 * **Reboot Reason:** {{ hostvars[host]['reboot_reason'] | default('N/A') | trim }}
 
-### Failed Rules & Snippet Reboot Assessment
+### Failed Rules & Remediation Details
 {% if hostvars[host]['failed_rules'] is defined and hostvars[host]['failed_rules'] | length > 0 %}
 {% for rule in hostvars[host]['failed_rules'] %}
 #### Rule: {{ rule.title }}
 * **Rule ID:** `{{ rule.id }}`
 * **Severity:** `{{ rule.severity | upper }}`
-* **Snippet Requires Reboot:** **{% if rule.snippet_requires_reboot %}YES (Modifies Kernel/Boot/System State){% else %}NO (Live Remediation){% endif %}**
-
-{% if rule.ansible_snippet %}
-```yaml
-# Ansible Remediation Snippet
-{{ rule.ansible_snippet }}
-{% else %}
-No automated Ansible snippet provided for this rule.
-{% endif %}
-
 {% endfor %}
 {% else %}
-No failed rules detected for this host.
+*No failed rules detected for this host.*
 {% endif %}
 
+---
 {% endfor %}
-
-
----
-
-<Image alt="Ansible Automation Platform Job Templates UI listing multiple templates" 
-caption="AAP Controller Job Templates List" src="image_agent_tag_9213805949027568339"/>
-
----
-
-### How They Connect in AAP Controller
-
-In the AAP Controller UI, you map this single Jinja file into your orchestration pipeline as follows:
-
-1. **Repository:** Pushing `templates/compliance_report.j2` along with `parse_satellite_arf_with_remediations.yml`.
-2. **AAP Job Template:** Pointing your AAP Job Template to `parse_satellite_arf_with_remediations.yml`.
-3. **EDA Rulebook:** Triggering that Job Template name (`02 - Parse ARF Reports & Extract Remediations` or `SCAP / 01 Triage and Route`) whenever Satellite posts a new ARF report webhook.
-
-<FollowUp label="Want me to show you how to wire the AAP Job Template to trigger the Jinja report automatically on new Satellite webhooks?" query="Show me how to wire the AAP Job Template to trigger the Jinja report automatically on new Satellite webhooks."/>
