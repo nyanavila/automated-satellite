@@ -18,7 +18,6 @@
 {% endfor %}
 
 ---
-
 ## 🚨 Dedicated Reboot Notice List
 
 {% set reboot_hosts = [] %}
@@ -39,9 +38,6 @@
 {% else %}
 ✅ **No systems currently require a reboot.** All evaluated RHEL hosts are running on active kernel and library configurations.
 {% endif %}
-
----
-
 ## 🔍 Detailed Remediation Snippets by Host & Severity
 
 {% for host in ansible_play_hosts %}
@@ -75,67 +71,5 @@
 ```yaml
 # Ansible Remediation Snippet (High Severity)
 {{ rule.ansible_snippet }}
-{% else %}
-No automated Ansible snippet provided for this rule.
-{% endif %}
 
-{% endfor %}
-{% else %}
-No High severity failures for this host.
-{% endif %}
-
-🟡 MEDIUM Severity Failures
-{% if med_rules | length > 0 %}
-{% for rule in med_rules %}
-
-Rule: {{ rule.title | default(rule.id) }}
-Rule ID: {{ rule.id }}
-
-Severity: MEDIUM
-
-Snippet Requires Reboot: {% if 'no_reboot_needed' not in (rule.tags | default([])) and ('reboot' in (rule.ansible_snippet | default('')) or 'kernel' in (rule.ansible_snippet | default(''))) %}YES{% else %}NO{% endif %}
-
-{% if rule.ansible_snippet %}
-
-YAML
-# Ansible Remediation Snippet (Medium Severity)
-{{ rule.ansible_snippet }}
-{% else %}
-No automated Ansible snippet provided for this rule.
-{% endif %}
-
-{% endfor %}
-{% else %}
-No Medium severity failures for this host.
-{% endif %}
-
-🟢 LOW Severity Failures
-{% if low_rules | length > 0 %}
-{% for rule in low_rules %}
-
-Rule: {{ rule.title | default(rule.id) }}
-Rule ID: {{ rule.id }}
-
-Severity: LOW
-
-Snippet Requires Reboot: {% if 'no_reboot_needed' not in (rule.tags | default([])) and ('reboot' in (rule.ansible_snippet | default(''))) %}YES{% else %}NO{% endif %}
-
-{% if rule.ansible_snippet %}
-
-YAML
-# Ansible Remediation Snippet (Low Severity)
-{{ rule.ansible_snippet }}
-{% else %}
-No automated Ansible snippet provided for this rule.
-{% endif %}
-
-{% endfor %}
-{% else %}
-No Low severity failures for this host.
-{% endif %}
-
-{% else %}
-No failed rules detected for this host.
-{% endif %}
-
-{% endfor %}
+---
