@@ -1,0 +1,80 @@
+---
+- name: Extract, Categorize, and Evaluate Remediations from Satellite ARF
+  hosts: all
+  become: true
+  vars:
+    satellite_url: "https://satellite.2hzls.sandbox223.opentlc.com"
+    satellite_user: "admin"
+    satellite_password: "MjE1ODU4"
+
+  tasks:
+    # -------------------------------------------------------------------------
+    # 1. Fetch ARF Report ID & Full Report JSON
+    # -------------------------------------------------------------------------
+    - name: Fetch latest ARF report summary
+      ansible.builtin.uri:
+        url: "{{ satellite_url }}/api/compliance/arf_reports?search=host%20%3D%20{{ inventory_hostname }}&per_page=1&order=reported%20DESC"
+        method: GET
+        user: "{{ satellite_user }}"
+        password: "{{ satellite_password }}"
+        force_basic_auth: true
+        validate_certs: false
+      delegate_to: localhost
+      register: arf_summary
+
+    - name: Set ARF Report ID
+      ansible.builtin.set_fact:
+        latest_arf_id: "{{ arf_summary.json.results[0].id | default(none) }}"
+
+    - name: Fetch Detailed Report with Fix Snippets
+      ansible.builtin.uri:
+        url: "{{ satellite_url }}/api/compliance/arf_reports/{{ latest_arf_id }}"
+        method: GET
+        user: "{{ satellite_user }}"
+        password: "{{ satellite_password }}"
+        force_basic_auth: true
+        validate_certs: false
+      delegate_to: localhost
+      when: latest_arf_id is not none
+      register: arf_details
+
+    # -------------------------------------------------------------------------
+    # 2. Extract & Categorize Failed Rules
+    # -------------------------------------------------------------------------
+    - name: Process and categorize failed rule snippets
+      ansible.builtin.set_fact:
+        high_severity_failures: >-
+          {{ arf_details.json.failed_rules | default([]) | selectattr('severity', 'equalto', 'high') | list }}
+        medium_severity_failures: >-
+          {{ arf_details.json.failed_rules | default([]) | selectattr('severity', 'equalto', 'medium') | list }}
+        low_severity_failures: >-
+          {{ arf_details.json.failed_rules | default([]) | selectattr('severity', 'equalto', 'low') | list }}
+
+    - name: Determine individual snippet reboot requirements
+      ansible.builtin.set_fact:
+        all_remediations_evaluated: >-
+          [
+            {% for rule in (high_severity_failures + medium_severity_failures + low_severity_failures) %}
+            {
+              "rule_id": "{{ rule.id }}",
+              "title": "{{ rule.title }}",
+              "severity": "{{ rule.severity }}",
+              "snippet": {{ rule.ansible_snippet | default('') | to_json }},
+              "requires_reboot": {{ ('no_reboot_needed' not in (rule.tags | default([]))) and ('reboot' in (rule.ansible_snippet | default('')) or 'kernel' in (rule.ansible_snippet | default(''))) }}
+            }{% if not loop.last %},{% endif %}
+            {% endfor %}
+          ]
+
+    # -------------------------------------------------------------------------
+    # 3. Render Categorized Execution & Audit Report
+    # -------------------------------------------------------------------------
+    - name: Render Full Categorized Remediation Report
+      ansible.builtin.template:
+        src: "templates/remediation_matrix.j2"
+        dest: "/tmp/remediation_matrix_{{ inventory_hostname }}.md"
+        mode: '0644'
+      delegate_to: localhost
+
+    - name: Print Remediation Plan in Job Output
+      ansible.builtin.debug:
+        msg: "{{ lookup('file', '/tmp/remediation_matrix_' + inventory_hostname + '.md') }}"
