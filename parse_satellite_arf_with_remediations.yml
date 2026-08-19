@@ -109,14 +109,14 @@
         msg:
           - "HOST:             {{ inventory_hostname }}"
           - "POLICY:           {{ target_policy }}"
-          - "ARF ID:           {{ latest_arf_id }}"
-          - "PASSED:           {{ passed_rules_count }}"
-          - "FAILED:           {{ failed_rules_count }}"
-          - "HIGH:             {{ high_rules | length }}"
-          - "MEDIUM:           {{ medium_rules | length }}"
-          - "LOW:              {{ low_rules | length }}"
-          - "REBOOT (snippet): {{ reboot_rules | length }} rules"
-          - "REBOOT (system):  {{ 'YES' if reboot_needed else 'NO' }}"
+          - "ARF ID:           {{ latest_arf_id | default('N/A') }}"
+          - "PASSED:           {{ passed_rules_count | default(0) }}"
+          - "FAILED:           {{ failed_rules_count | default(0) }}"
+          - "HIGH:             {{ high_rules | default([]) | length }}"
+          - "MEDIUM:           {{ medium_rules | default([]) | length }}"
+          - "LOW:              {{ low_rules | default([]) | length }}"
+          - "REBOOT (snippet): {{ reboot_rules | default([]) | length }} rules"
+          - "REBOOT (system):  {{ 'YES' if reboot_needed | default(false) else 'NO' }}"
 
     - name: Render remediation matrix
       ansible.builtin.template:
