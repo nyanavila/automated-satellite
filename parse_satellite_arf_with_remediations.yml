@@ -1,15 +1,19 @@
 ---
-- name: Extract OpenSCAP ARF Compliance Data and Generate Remediation Matrix
+- name: OpenSCAP Compliance Assessment and Remediation
   hosts: all
   gather_facts: true
   vars:
     satellite_url: "https://satellite.2hzls.sandbox223.opentlc.com"
     target_policy: "Freddie-CIS-BCS-Policy-RHEL9"
+    max_rules_per_page: 200
 
   tasks:
-    - name: Query Satellite API for host's latest ARF report for target policy
+
+    # ── Step 1: Find the latest ARF report for this host + policy ─────────────
+    - name: Query Satellite for latest ARF report (policy + host)
       ansible.builtin.uri:
-        url: "{{ satellite_url }}/api/compliance/arf_reports?search=host%3D%22{{ inventory_hostname }}%22&per_page=50&order=reported+DESC"
+        url: >-
+          {{ satellite_url }}/api/compliance/arf_reports?search=host%3D%22{{ inventory_hostname }}%22+and+policy%3D%22{{ target_policy | urlencode }}%22+and+last_for%3Dhost&per_page=1&order=reported+DESC
         method: GET
         user: "{{ satellite_user }}"
         password: "{{ satellite_password }}"
@@ -18,32 +22,28 @@
         status_code: [200]
       register: arf_search
 
-    - name: Select latest ARF report matching target policy
-      ansible.builtin.set_fact:
-        target_arf: >-
-          {{
-            arf_search.json.results
-            | selectattr('policy', 'defined')
-            | selectattr('policy.name', 'equalto', target_policy)
-            | list
-            | first
-            | default({})
-          }}
+    - name: Debug ARF search result
+      ansible.builtin.debug:
+        msg:
+          total: "{{ arf_search.json.total }}"
+          results: "{{ arf_search.json.results | length }}"
+          first: "{{ arf_search.json.results[0] | default('NONE') }}"
 
-    - name: Fail if no ARF report found for target policy
+    - name: Fail if no ARF report found
       ansible.builtin.fail:
         msg: "No ARF report found for {{ inventory_hostname }} with policy {{ target_policy }}"
-      when: target_arf == {}
+      when: arf_search.json.results | length == 0
 
-    - name: Set target ARF ID
+    - name: Set ARF report facts from search result
       ansible.builtin.set_fact:
-        target_arf_id: "{{ target_arf.id }}"
-        passed_rules_count: "{{ target_arf.passed | default(0) }}"
-        failed_rules_count: "{{ target_arf.failed | default(0) }}"
+        latest_arf_id: "{{ arf_search.json.results[0].id }}"
+        passed_rules_count: "{{ arf_search.json.results[0].passed | default(0) }}"
+        failed_rules_count: "{{ arf_search.json.results[0].failed | default(0) }}"
 
-    - name: Download XCCDF ARF report XML for rule-level detail
+    # ── Step 2: Download the HTML report and extract rule data ────────────────
+    - name: Download ARF HTML report
       ansible.builtin.uri:
-        url: "{{ satellite_url }}/api/compliance/arf_reports/{{ target_arf_id }}/download_html"
+        url: "{{ satellite_url }}/api/compliance/arf_reports/{{ latest_arf_id }}/download_html"
         method: GET
         user: "{{ satellite_user }}"
         password: "{{ satellite_password }}"
@@ -52,96 +52,217 @@
         return_content: true
         status_code: [200]
       register: arf_html
-      ignore_errors: true
 
-    - name: Fetch rule-level data from compliance rules endpoint
+    # ── Step 3: Use foreman-scap-client or oscap to get rule snippets ─────────
+    # The Satellite HTML report has rule IDs and results but not snippets.
+    # Snippets come from the remediation playbook generation endpoint.
+    - name: Request Ansible remediation playbook from Satellite
       ansible.builtin.uri:
-        url: "{{ satellite_url }}/api/compliance/arf_reports/{{ target_arf_id }}/rules?per_page=250&search=result%3Dfail"
+        url: "{{ satellite_url }}/api/compliance/arf_reports/{{ latest_arf_id }}/download"
         method: GET
         user: "{{ satellite_user }}"
         password: "{{ satellite_password }}"
         force_basic_auth: true
         validate_certs: false
+        return_content: true
         status_code: [200, 404]
-      register: arf_rules_raw
+      register: arf_download
       ignore_errors: true
 
-    - name: Debug rules API response
+    - name: Debug download response
       ansible.builtin.debug:
         msg:
-          - "ARF ID: {{ target_arf_id }}"
-          - "Rules endpoint status: {{ arf_rules_raw.status }}"
-          - "Rules count returned: {{ arf_rules_raw.json.results | default([]) | length }}"
-          - "First rule sample: {{ arf_rules_raw.json.results[0] | default('NONE') }}"
-      when: arf_rules_raw is defined
+          status: "{{ arf_download.status }}"
+          content_type: "{{ arf_download.content_type | default('unknown') }}"
+          content_length: "{{ arf_download.content | default('') | length }}"
 
-    - name: Build failed rules list with severity from rules endpoint
+    # ── Step 4: Get remediation snippets via oscap on the target host ─────────
+    - name: Check if oscap-remediate or scap-security-guide is available
+      ansible.builtin.command: rpm -q scap-security-guide openscap-scanner
+      register: scap_packages
+      failed_when: false
+      changed_when: false
+
+    - name: Get list of failed rules via oscap (local scan)
+      ansible.builtin.command: >
+        oscap xccdf eval
+        --profile "{{ target_policy }}"
+        --results /tmp/oscap_results_{{ inventory_hostname }}.xml
+        --report /tmp/oscap_report_{{ inventory_hostname }}.html
+        /usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml
+      register: oscap_scan
+      failed_when: oscap_scan.rc > 2
+      changed_when: false
+      ignore_errors: true
+
+    - name: Parse oscap results XML for failed rules with severity
+      ansible.builtin.shell: |
+        python3 << 'PYEOF'
+        import xml.etree.ElementTree as ET
+        import json
+        import subprocess
+        import os
+
+        results_file = '/tmp/oscap_results_{{ inventory_hostname }}.xml'
+        if not os.path.exists(results_file):
+            print(json.dumps([]))
+            exit(0)
+
+        ns = {
+            'xccdf': 'http://checklists.nist.gov/xccdf/1.2',
+            'xccdf11': 'http://checklists.nist.gov/xccdf/1.1'
+        }
+
+        tree = ET.parse(results_file)
+        root = tree.getroot()
+
+        failed_rules = []
+        for rr in root.iter('{http://checklists.nist.gov/xccdf/1.2}rule-result'):
+            result_el = rr.find('{http://checklists.nist.gov/xccdf/1.2}result')
+            if result_el is None or result_el.text != 'fail':
+                continue
+
+            rule_id = rr.get('idref', '')
+            severity = rr.get('severity', 'unknown')
+            weight = rr.get('weight', '0')
+
+            failed_rules.append({
+                'id': rule_id,
+                'severity': severity,
+                'weight': weight,
+                'result': 'fail'
+            })
+
+        print(json.dumps(failed_rules))
+        PYEOF
+      register: oscap_failed_rules_raw
+      changed_when: false
+      ignore_errors: true
+
+    - name: Set failed rules from oscap parse
+      ansible.builtin.set_fact:
+        oscap_failed_rules: "{{ oscap_failed_rules_raw.stdout | default('[]') | from_json }}"
+      when: oscap_failed_rules_raw.rc | default(1) == 0
+
+    - name: Set empty failed rules if oscap unavailable
+      ansible.builtin.set_fact:
+        oscap_failed_rules: []
+      when: oscap_failed_rules_raw.rc | default(1) != 0
+
+    # ── Step 5: Generate remediation snippets per failed rule ─────────────────
+    - name: Generate Ansible remediation for each failed rule
+      ansible.builtin.shell: |
+        oscap xccdf generate fix \
+          --fix-type ansible \
+          --result-id "" \
+          --output /tmp/remediation_{{ item.id | regex_replace('[^a-zA-Z0-9]', '_') }}.yml \
+          --profile "{{ target_policy }}" \
+          --rule "{{ item.id }}" \
+          /usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml \
+          /tmp/oscap_results_{{ inventory_hostname }}.xml 2>/dev/null || true
+        if [ -f "/tmp/remediation_{{ item.id | regex_replace('[^a-zA-Z0-9]', '_') }}.yml" ]; then
+          cat "/tmp/remediation_{{ item.id | regex_replace('[^a-zA-Z0-9]', '_') }}.yml"
+        fi
+      register: rule_snippets
+      loop: "{{ oscap_failed_rules }}"
+      loop_control:
+        label: "{{ item.id }}"
+      changed_when: false
+      ignore_errors: true
+      when: oscap_failed_rules | length > 0
+
+    # ── Step 6: Build enriched failed rules list with snippets ────────────────
+    - name: Build failed rules with snippets and reboot detection
       ansible.builtin.set_fact:
         failed_rules: >-
           {{
-            arf_rules_raw.json.results
-            | default([])
-            | selectattr('result', 'defined')
-            | selectattr('result', 'equalto', 'fail')
-            | list
+            failed_rules | default([]) + [{
+              'id': item.item.id,
+              'severity': item.item.severity,
+              'title': item.item.id | regex_replace('^xccdf_org\\.ssgproject\\.content_rule_', '') | replace('_', ' '),
+              'ansible_snippet': item.stdout | default(''),
+              'needs_reboot': (
+                'reboot' in (item.stdout | default('')) or
+                'kernel' in (item.stdout | default('')) or
+                'grub' in (item.stdout | default(''))
+              ) and 'no_reboot_needed' not in (item.stdout | default(''))
+            }]
           }}
+      loop: "{{ rule_snippets.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.id }}"
       when:
-        - arf_rules_raw.status == 200
-        - arf_rules_raw.json.results | default([]) | length > 0
+        - rule_snippets is defined
+        - rule_snippets.results is defined
 
-    - name: Set empty failed rules if endpoint unavailable
+    - name: Set empty failed_rules if no snippets generated
       ansible.builtin.set_fact:
         failed_rules: []
-      when: >
-        arf_rules_raw is not defined or
-        arf_rules_raw.status != 200 or
-        arf_rules_raw.json.results | default([]) | length == 0
+      when: failed_rules is not defined
 
+    # ── Step 7: Categorise by severity ───────────────────────────────────────
     - name: Categorise failed rules by severity
       ansible.builtin.set_fact:
-        high_rules: "{{ failed_rules | selectattr('severity', 'defined') | selectattr('severity', 'equalto', 'high') | list }}"
-        medium_rules: "{{ failed_rules | selectattr('severity', 'defined') | selectattr('severity', 'equalto', 'medium') | list }}"
-        low_rules: "{{ failed_rules | selectattr('severity', 'defined') | selectattr('severity', 'equalto', 'low') | list }}"
+        high_rules: "{{ failed_rules | selectattr('severity', 'equalto', 'high') | list }}"
+        medium_rules: "{{ failed_rules | selectattr('severity', 'equalto', 'medium') | list }}"
+        low_rules: "{{ failed_rules | selectattr('severity', 'equalto', 'low') | list }}"
+        reboot_rules: "{{ failed_rules | selectattr('needs_reboot', 'equalto', true) | list }}"
 
+    # ── Step 8: Reboot check ──────────────────────────────────────────────────
     - name: Check host reboot requirements
       ansible.builtin.command: needs-restarting -r
       register: needs_restarting_check
       failed_when: false
       changed_when: false
 
-    - name: Set host reboot status fact
+    - name: Set reboot status
       ansible.builtin.set_fact:
         reboot_needed: "{{ true if needs_restarting_check.rc == 1 else false }}"
         reboot_reason: >-
           {{
-            'System requires a reboot due to updated kernel or core libraries.'
+            'System requires a reboot — updated kernel or core libraries pending.'
             if needs_restarting_check.rc == 1
             else 'No reboot required.'
           }}
 
-    - name: Display Host Assessment Summary
+    # ── Step 9: Summary ───────────────────────────────────────────────────────
+    - name: Display assessment summary
       ansible.builtin.debug:
         msg:
-          - "HOST:      {{ inventory_hostname }} (RHEL {{ ansible_distribution_major_version }})"
-          - "ARF ID:    {{ target_arf_id }}"
-          - "POLICY:    {{ target_policy }}"
+          - "HOST:      {{ inventory_hostname }}"
+          - "ARF ID:    {{ latest_arf_id }}"
           - "PASSED:    {{ passed_rules_count }}"
           - "FAILED:    {{ failed_rules_count }}"
           - "HIGH:      {{ high_rules | length }}"
           - "MEDIUM:    {{ medium_rules | length }}"
           - "LOW:       {{ low_rules | length }}"
-          - "REBOOT:    {{ 'YES' if reboot_needed else 'NO' }}"
+          - "REBOOT (snippet): {{ reboot_rules | length }} rules require reboot"
+          - "REBOOT (system):  {{ 'YES' if reboot_needed else 'NO' }}"
 
-    - name: Render Jinja2 Remediation Matrix Template
+    # ── Step 10: Remediate non-reboot HIGH severity rules ────────────────────
+    - name: Apply HIGH severity remediations that do NOT require reboot
+      ansible.builtin.command:
+        cmd: "ansible-playbook /tmp/remediation_{{ item.id | regex_replace('[^a-zA-Z0-9]', '_') }}.yml"
+      loop: "{{ high_rules | rejectattr('needs_reboot', 'equalto', true) | list }}"
+      loop_control:
+        label: "{{ item.id }}"
+      when:
+        - high_rules | length > 0
+        - item.ansible_snippet | length > 0
+      register: remediation_results
+      ignore_errors: true
+
+    # ── Step 11: Render report ────────────────────────────────────────────────
+    - name: Render remediation matrix report
       ansible.builtin.template:
         src: templates/remediation_matrix.j2
-        dest: /tmp/remediation_matrix.md
+        dest: /tmp/remediation_matrix_{{ ansible_date_time.date }}.md
         mode: '0644'
       delegate_to: localhost
       run_once: true
 
-    - name: Display Rendered Remediation Matrix
+    - name: Display report
       ansible.builtin.debug:
-        msg: "{{ lookup('file', '/tmp/remediation_matrix.md').split('\n') }}"
+        msg: "{{ lookup('file', '/tmp/remediation_matrix_' + ansible_date_time.date + '.md').split('\n') }}"
       delegate_to: localhost
       run_once: true
