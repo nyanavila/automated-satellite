@@ -10,6 +10,7 @@
         if ansible_distribution_major_version == '9'
         else 'Freddie-CIS-BCS-Policy'
       }}
+
   tasks:
 
     - name: Query Satellite for latest ARF report
@@ -26,7 +27,7 @@
 
     - name: Fail if no report found
       ansible.builtin.fail:
-        msg: "No ARF report found for {{ inventory_hostname }}"
+        msg: "No ARF report found for {{ inventory_hostname }} policy={{ target_policy }}"
       when: arf_search.json.results | length == 0
 
     - name: Set ARF facts
@@ -44,13 +45,13 @@
         force_basic_auth: true
         validate_certs: false
         return_content: true
-        dest: "/tmp/arf_{{ latest_arf_id }}.xml.bz2"
+        dest: "/tmp/arf_{{ inventory_hostname }}_{{ latest_arf_id }}.xml.bz2"
         status_code: [200]
       delegate_to: localhost
 
     - name: Decompress ARF report
       ansible.builtin.command:
-        cmd: "bunzip2 -f /tmp/arf_{{ latest_arf_id }}.xml.bz2"
+        cmd: "bunzip2 -f /tmp/arf_{{ inventory_hostname }}_{{ latest_arf_id }}.xml.bz2"
       delegate_to: localhost
       changed_when: true
 
@@ -63,18 +64,15 @@
         tree = ET.parse('/tmp/arf_{{ inventory_hostname }}_{{ latest_arf_id }}.xml')
         root = tree.getroot()
 
-        # XCCDF 1.2 namespace
         ns12 = 'http://checklists.nist.gov/xccdf/1.2'
         ns11 = 'http://checklists.nist.gov/xccdf/1.1'
         ns = ns12
 
-        # Try both namespaces
         rule_results = root.findall('.//{%s}rule-result' % ns12)
         if not rule_results:
             rule_results = root.findall('.//{%s}rule-result' % ns11)
             ns = ns11
 
-        # Build a map of rule-id -> definition (title, severity, fix)
         rule_defs = {}
         for rule in root.findall('.//{%s}Rule' % ns):
             rid = rule.get('id', '')
@@ -112,7 +110,6 @@
                 'needs_reboot': needs_reboot
             })
 
-        # Sort high -> medium -> low
         order = {'high': 0, 'medium': 1, 'low': 2, 'unknown': 3}
         failed.sort(key=lambda r: order.get(r['severity'], 3))
         print(json.dumps(failed))
@@ -151,13 +148,14 @@
     - name: Display summary
       ansible.builtin.debug:
         msg:
-          - "HOST:    {{ inventory_hostname }}"
-          - "ARF ID:  {{ latest_arf_id }}"
-          - "PASSED:  {{ passed_rules_count }}"
-          - "FAILED:  {{ failed_rules_count }}"
-          - "HIGH:    {{ high_rules | length }}"
-          - "MEDIUM:  {{ medium_rules | length }}"
-          - "LOW:     {{ low_rules | length }}"
+          - "HOST:              {{ inventory_hostname }}"
+          - "POLICY:            {{ target_policy }}"
+          - "ARF ID:            {{ latest_arf_id }}"
+          - "PASSED:            {{ passed_rules_count }}"
+          - "FAILED:            {{ failed_rules_count }}"
+          - "HIGH:              {{ high_rules | length }}"
+          - "MEDIUM:            {{ medium_rules | length }}"
+          - "LOW:               {{ low_rules | length }}"
           - "REBOOT (snippet):  {{ reboot_rules | length }} rules"
           - "REBOOT (system):   {{ 'YES' if reboot_needed else 'NO' }}"
 
@@ -173,22 +171,4 @@
       ansible.builtin.debug:
         msg: "{{ lookup('file', '/tmp/remediation_matrix_' + ansible_date_time.date + '.md').split('\n') }}"
       delegate_to: localhost
-          - name: Download ARF report bzip2
-      ansible.builtin.uri:
-        url: "{{ satellite_url }}/api/compliance/arf_reports/{{ latest_arf_id }}/download"
-        method: GET
-        user: "{{ satellite_user }}"
-        password: "{{ satellite_password }}"
-        force_basic_auth: true
-        validate_certs: false
-        return_content: true
-        dest: "/tmp/arf_{{ inventory_hostname }}_{{ latest_arf_id }}.xml.bz2"
-        status_code: [200]
-      delegate_to: localhost
-
-    - name: Decompress ARF report
-      ansible.builtin.command:
-        cmd: "bunzip2 -f /tmp/arf_{{ inventory_hostname }}_{{ latest_arf_id }}.xml.bz2"
-      delegate_to: localhost
-      changed_when: true
       run_once: true
