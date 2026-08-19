@@ -1,86 +1,84 @@
 ---
-- name: Parse Satellite ARF Compliance Reports & Evaluate Reboot Status
+- name: Extract OpenSCAP ARF Compliance Data and Generate Remediation Matrix
   hosts: all
-  become: true
+  gather_facts: true
   vars:
     satellite_url: "https://satellite.2hzls.sandbox223.opentlc.com"
-    satellite_user: "admin"
-    satellite_password: "MjE1ODU4"
+    # Ensure satellite_user and satellite_password are defined (e.g. via AAP Credentials/Vault)
 
   tasks:
-    # -------------------------------------------------------------------------
-    # 1. Query Satellite ARF Reports API
-    # -------------------------------------------------------------------------
-    - name: Get ARF Report summary for target host from Satellite API
+    - name: Query Satellite API for ARF reports with compliance data
       ansible.builtin.uri:
-        url: "{{ satellite_url }}/api/compliance/arf_reports?search=host%20%3D%20{{ inventory_hostname }}&per_page=1&order=reported%20DESC"
+        url: "{{ satellite_url }}/api/v2/hosts/{{ inventory_hostname }}/arf_reports?search=failed%3E0%20or%20passed%3E0"
         method: GET
         user: "{{ satellite_user }}"
         password: "{{ satellite_password }}"
         force_basic_auth: true
         validate_certs: false
-        headers:
-          Accept: "application/json"
-      delegate_to: localhost
-      register: arf_api_response
+        status_code: [200]
+      register: arf_summary_raw
 
-    - name: Extract latest ARF report ID and metrics
-      ansible.builtin.set_fact:
-        latest_arf_id: "{{ arf_api_response.json.results[0].id | default(none) }}"
-        failed_rules_count: "{{ arf_api_response.json.results[0].failed_count | default(0) }}"
-        passed_rules_count: "{{ arf_api_response.json.results[0].passed_count | default(0) }}"
-
-    # -------------------------------------------------------------------------
-    # 2. Fetch Detailed Report Data (Failed Rules & Remediation Snippets)
-    # -------------------------------------------------------------------------
-    - name: Fetch detailed report data including fix snippets
+    - name: Fallback query if no non-zero reports found
       ansible.builtin.uri:
-        url: "{{ satellite_url }}/api/compliance/arf_reports/{{ latest_arf_id }}"
+        url: "{{ satellite_url }}/api/v2/hosts/{{ inventory_hostname }}/arf_reports"
         method: GET
         user: "{{ satellite_user }}"
         password: "{{ satellite_password }}"
         force_basic_auth: true
         validate_certs: false
-        headers:
-          Accept: "application/json"
-      delegate_to: localhost
-      when: latest_arf_id is not none
-      register: arf_detail_response
+        status_code: [200]
+      register: arf_summary_fallback
+      when: arf_summary_raw.json.results | length == 0
 
-    - name: Extract failed rules array
+    - name: Determine target ARF Report ID
       ansible.builtin.set_fact:
-        failed_rules: "{{ arf_detail_response.json.failed_rules | default([]) }}"
-      when: arf_detail_response is not skipped and arf_detail_response.json is defined
+        target_arf_id: >-
+          {{
+            (arf_summary_raw.json.results[0].id)
+            if (arf_summary_raw.json.results | length > 0)
+            else (arf_summary_fallback.json.results[0].id)
+          }}
 
-    # -------------------------------------------------------------------------
-    # 3. Check System-Level Reboot Triggers
-    # -------------------------------------------------------------------------
-    - name: Check if updated kernel/system libraries require reboot
-      ansible.builtin.command:
-        cmd: needs-restarting -r
+    - name: Fetch detailed OpenSCAP ARF report from Satellite
+      ansible.builtin.uri:
+        url: "{{ satellite_url }}/api/v2/compliance/arf_reports/{{ target_arf_id }}"
+        method: GET
+        user: "{{ satellite_user }}"
+        password: "{{ satellite_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code: [200]
+      register: arf_detail_raw
+
+    - name: Extract compliance facts and failed rule snippets
+      ansible.builtin.set_fact:
+        latest_arf_id: "{{ target_arf_id }}"
+        passed_rules_count: "{{ arf_detail_raw.json.passed_count | default(0) }}"
+        failed_rules_count: "{{ arf_detail_raw.json.failed_count | default(0) }}"
+        failed_rules: >-
+          {{
+            arf_detail_raw.json.rules
+            | default([])
+            | selectattr('result', 'defined')
+            | selectattr('result', 'equalto', 'fail')
+            | list
+          }}
+
+    - name: Check host reboot requirements (Kernel & Active Library Check)
+      ansible.builtin.command: needs-restarting -r
       register: needs_restarting_check
       failed_when: false
       changed_when: false
 
-    - name: Check pending reboot flag from systemd or OpenSCAP remediations
-      ansible.builtin.stat:
-        path: /var/run/reboot-required
-      register: reboot_flag_file
-
-    # -------------------------------------------------------------------------
-    # 4. Decision Logic Matrix
-    # -------------------------------------------------------------------------
-    - name: Calculate Reboot Decision
+    - name: Set host reboot status fact
       ansible.builtin.set_fact:
-        reboot_needed: "{{ (needs_restarting_check.rc == 1) or (reboot_flag_file.stat.exists) }}"
+        reboot_needed: "{{ true if needs_restarting_check.rc == 1 else false }}"
         reboot_reason: >-
-          {% if needs_restarting_check.rc == 1 %}
-          Kernel or core glibc/systemd updates require a system reboot.
-          {% elif reboot_flag_file.stat.exists %}
-          Compliance remediation placed a pending reboot flag file.
-          {% else %}
-          System is running on latest booted kernel/libraries. No reboot required.
-          {% endif %}
+          {{
+            'System requires a reboot due to updated kernel or core libraries.'
+            if needs_restarting_check.rc == 1
+            else 'System is running on latest booted kernel/libraries. No reboot required.'
+          }}
 
     - name: Display Host Assessment Summary
       ansible.builtin.debug:
@@ -91,36 +89,23 @@
           - "PASSED RULES:             {{ passed_rules_count }}"
           - "FAILED RULES:             {{ failed_rules_count }}"
           - "REBOOT REQUIRED:          {{ 'YES' if reboot_needed else 'NO' }}"
-          - "REASON:                   {{ reboot_reason | trim }}"
+          - "REASON:                   {{ reboot_reason }}"
           - "=========================================================="
 
-    # -------------------------------------------------------------------------
-    # 5. Generate Dual Reports (Executive Summary & Reboot-Only List)
-    # -------------------------------------------------------------------------
-    - name: Render Executive Compliance Report
+- name: Render Compliance Remediation Matrix Document
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    satellite_url: "https://satellite.2hzls.sandbox223.opentlc.com"
+
+  tasks:
+    - name: Render Jinja2 Remediation Matrix Template
       ansible.builtin.template:
-        src: "templates/compliance_report.j2"
-        dest: "/tmp/compliance_remediation_summary.md"
+        src: templates/remediation_matrix.j2
+        dest: /tmp/remediation_matrix.md
         mode: '0644'
-      delegate_to: localhost
-      run_once: true
 
-    - name: Render Reboot-Required List
-      ansible.builtin.template:
-        src: "templates/reboot_required_list.j2"
-        dest: "/tmp/reboot_required_list.md"
-        mode: '0644'
-      delegate_to: localhost
-      run_once: true
-
-    - name: Display Executive Compliance Report in AAP Logs
+    - name: Display Rendered Remediation Matrix in AAP Job Output
       ansible.builtin.debug:
-        msg: "{{ lookup('file', '/tmp/compliance_remediation_summary.md') }}"
-      delegate_to: localhost
-      run_once: true
-
-    - name: Display Reboot-Required Notice in AAP Logs
-      ansible.builtin.debug:
-        msg: "{{ lookup('file', '/tmp/reboot_required_list.md') }}"
-      delegate_to: localhost
-      run_once: true
+        msg: "{{ lookup('file', '/tmp/remediation_matrix.md').split('\n') }}"
