@@ -123,3 +123,13 @@
         msg: "{{ lookup('file', '/tmp/remediation_matrix_' + ansible_date_time.date + '.md').split('\n') }}"
       delegate_to: localhost
       run_once: true
+          - name: Show HIGH severity rule detail
+      ansible.builtin.debug:
+        msg:
+          - "Rule:       {{ item.title }}"
+          - "ID:         {{ item.id }}"
+          - "Reboot:     {{ item.needs_reboot }}"
+          - "Has snippet: {{ item.has_snippet }}"
+      loop: "{{ high_rules }}"
+      loop_control:
+        label: "{{ item.id }}"
