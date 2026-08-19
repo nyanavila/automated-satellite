@@ -8,14 +8,33 @@
   tasks:
     - name: Query Satellite API for host's latest compliance ARF report
       ansible.builtin.uri:
-        url: "{{ satellite_url }}/api/compliance/arf_reports?search=host%3D%22{{ inventory_hostname }}%22%20and%20(failed%3E0%20or%20passed%3E0)&per_page=1&order=created_at%20DESC"
+        url: "{{ satellite_url }}/api/compliance/arf_reports"
         method: GET
-        user: "{{ satellite_user }}"
+        user: "{{ satellite_username }}"
         password: "{{ satellite_password }}"
         force_basic_auth: true
         validate_certs: false
-        status_code: [200]
-      register: arf_search_raw
+        return_content: true
+        headers:
+          Accept: application/json
+        body_format: form-urlencoded
+        body:
+          search: "host=\"{{ inventory_hostname }}\""
+          per_page: 1
+          order: "created_at DESC"
+      register: arf_response
+      failed_when: arf_response.status != 200
+
+    - name: Set latest ARF report ID
+      ansible.builtin.set_fact:
+        latest_arf_id: "{{ arf_response.json.results[0].id | default('N/A') }}"
+      when: arf_response.json.results | length > 0
+
+    - name: Set no report found
+      ansible.builtin.set_fact:
+        latest_arf_id: "N/A"
+      when: arf_response.json.results | length == 0
+  
 
     - name: Fallback query if no populated report found
       ansible.builtin.uri:
