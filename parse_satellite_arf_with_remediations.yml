@@ -8,7 +8,7 @@
   tasks:
     - name: Query Satellite API for host compliance ARF reports
       ansible.builtin.uri:
-        url: "{{ satellite_url }}/api/compliance/arf_reports?search=host%3D%22{{ inventory_hostname }}%22&per_page=10&order=created_at%20DESC"
+        url: "{{ satellite_url }}/api/compliance/arf_reports?search=host%3D%22{{ inventory_hostname }}%22&per_page=10"
         method: GET
         user: "{{ satellite_user }}"
         password: "{{ satellite_password }}"
@@ -17,7 +17,7 @@
         status_code: [200]
       register: arf_search_raw
 
-    - name: Fetch details for returned reports to find populated compliance data
+    - name: Fetch details for returned reports to locate populated compliance failures
       ansible.builtin.uri:
         url: "{{ satellite_url }}/api/compliance/arf_reports/{{ item.id }}"
         method: GET
@@ -29,7 +29,7 @@
       loop: "{{ arf_search_raw.json.results }}"
       register: arf_details_list
 
-    - name: Select first report that has failed or passed rules
+    - name: Select first report that has failed rules
       ansible.builtin.set_fact:
         selected_arf_detail: >-
           {{
