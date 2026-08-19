@@ -13,10 +13,17 @@
 
   tasks:
 
+    - name: Copy ARF parser script to controller
+      ansible.builtin.copy:
+        src: files/parse_arf.py
+        dest: /tmp/parse_arf.py
+        mode: '0755'
+      delegate_to: localhost
+      run_once: true
+
     - name: Query Satellite for latest ARF report
       ansible.builtin.uri:
-        url: >-
-          {{ satellite_url }}/api/compliance/arf_reports?search=host%3D%22{{ inventory_hostname }}%22+and+policy%3D%22{{ target_policy | urlencode }}%22+and+last_for%3Dhost&per_page=1&order=reported+DESC
+        url: "{{ satellite_url }}/api/compliance/arf_reports?search=host%3D%22{{ inventory_hostname }}%22+and+policy%3D%22{{ target_policy | urlencode }}%22+and+last_for%3Dhost&per_page=1&order=reported+DESC"
         method: GET
         user: "{{ satellite_user }}"
         password: "{{ satellite_password }}"
@@ -56,64 +63,8 @@
       changed_when: true
 
     - name: Parse ARF XML and extract failed rules with severity
-      ansible.builtin.shell: |
-        python3 << 'PYEOF'
-        import xml.etree.ElementTree as ET
-        import json
-
-        tree = ET.parse('/tmp/arf_{{ inventory_hostname }}_{{ latest_arf_id }}.xml')
-        root = tree.getroot()
-
-        ns12 = 'http://checklists.nist.gov/xccdf/1.2'
-        ns11 = 'http://checklists.nist.gov/xccdf/1.1'
-        ns = ns12
-
-        rule_results = root.findall('.//{%s}rule-result' % ns12)
-        if not rule_results:
-            rule_results = root.findall('.//{%s}rule-result' % ns11)
-            ns = ns11
-
-        rule_defs = {}
-        for rule in root.findall('.//{%s}Rule' % ns):
-            rid = rule.get('id', '')
-            severity = rule.get('severity', 'unknown')
-            title_el = rule.find('{%s}title' % ns)
-            title = title_el.text if title_el is not None else rid
-            fixes = []
-            for fix in rule.findall('{%s}fix' % ns):
-                if fix.get('system', '') in [
-                    'urn:xccdf:fix:script:ansible',
-                    'urn:redhat:ansible:roles'
-                ]:
-                    fixes.append(fix.text or '')
-            rule_defs[rid] = {
-                'title': title,
-                'severity': severity,
-                'ansible_fix': '\n'.join(fixes)
-            }
-
-        failed = []
-        for rr in rule_results:
-            result_el = rr.find('{%s}result' % ns)
-            if result_el is None or result_el.text.strip() != 'fail':
-                continue
-            rid = rr.get('idref', '')
-            defn = rule_defs.get(rid, {})
-            snippet = defn.get('ansible_fix', '')
-            needs_reboot = any(kw in snippet for kw in ['reboot', 'kernel', 'grub', 'dracut']) \
-                           and 'no_reboot_needed' not in snippet
-            failed.append({
-                'id': rid,
-                'title': defn.get('title', rid),
-                'severity': defn.get('severity', 'unknown'),
-                'ansible_snippet': snippet,
-                'needs_reboot': needs_reboot
-            })
-
-        order = {'high': 0, 'medium': 1, 'low': 2, 'unknown': 3}
-        failed.sort(key=lambda r: order.get(r['severity'], 3))
-        print(json.dumps(failed))
-        PYEOF
+      ansible.builtin.command:
+        cmd: "python3 /tmp/parse_arf.py /tmp/arf_{{ inventory_hostname }}_{{ latest_arf_id }}.xml"
       register: parsed_rules
       delegate_to: localhost
       changed_when: false
@@ -148,16 +99,16 @@
     - name: Display summary
       ansible.builtin.debug:
         msg:
-          - "HOST:              {{ inventory_hostname }}"
-          - "POLICY:            {{ target_policy }}"
-          - "ARF ID:            {{ latest_arf_id }}"
-          - "PASSED:            {{ passed_rules_count }}"
-          - "FAILED:            {{ failed_rules_count }}"
-          - "HIGH:              {{ high_rules | length }}"
-          - "MEDIUM:            {{ medium_rules | length }}"
-          - "LOW:               {{ low_rules | length }}"
-          - "REBOOT (snippet):  {{ reboot_rules | length }} rules"
-          - "REBOOT (system):   {{ 'YES' if reboot_needed else 'NO' }}"
+          - "HOST:             {{ inventory_hostname }}"
+          - "POLICY:           {{ target_policy }}"
+          - "ARF ID:           {{ latest_arf_id }}"
+          - "PASSED:           {{ passed_rules_count }}"
+          - "FAILED:           {{ failed_rules_count }}"
+          - "HIGH:             {{ high_rules | length }}"
+          - "MEDIUM:           {{ medium_rules | length }}"
+          - "LOW:              {{ low_rules | length }}"
+          - "REBOOT (snippet): {{ reboot_rules | length }} rules"
+          - "REBOOT (system):  {{ 'YES' if reboot_needed else 'NO' }}"
 
     - name: Render remediation matrix
       ansible.builtin.template:
