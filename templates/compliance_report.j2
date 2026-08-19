@@ -1,85 +1,58 @@
-# OpenSCAP Compliance, Severity Matrix & Reboot Assessment Report
+# OpenSCAP Compliance Remediation Matrix
 **Generated On:** {{ hostvars[groups['all'][0]]['ansible_date_time']['iso8601'] | default('N/A') }}
 **Satellite Host:** {{ satellite_url }}
 
 ---
 
-## 📊 Executive Summary Dashboard
-
-| Hostname | RHEL Version | Satellite ARF ID | Passed | Failed | High | Med | Low | Reboot Required? |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-{% for host in ansible_play_hosts %}
-{% set hvars = hostvars[host] %}
-{% set failed_list = hvars['failed_rules'] | default([]) %}
-{% set high_c = failed_list | selectattr('severity', 'equalto', 'high') | list | length %}
-{% set med_c = failed_list | selectattr('severity', 'equalto', 'medium') | list | length %}
-{% set low_c = failed_list | selectattr('severity', 'equalto', 'low') | list | length %}
-| **{{ host }}** | RHEL {{ hvars['ansible_distribution_major_version'] | default('N/A') }} | {{ hvars['latest_arf_id'] | default('N/A') }} | {{ hvars['passed_rules_count'] | default(0) }} | {{ hvars['failed_rules_count'] | default(0) }} | {{ high_c }} | {{ med_c }} | {{ low_c }} | **{{ 'YES' if hvars['reboot_needed'] | default(false) else 'NO' }}** |
-{% endfor %}
-
----
-
-## 🚨 Dedicated Reboot Notice List
-
-{% set reboot_hosts = [] %}
-{% for host in ansible_play_hosts %}
-  {% if hostvars[host]['reboot_needed'] | default(false) %}
-    {% set _ = reboot_hosts.append(host) %}
-  {% endif %}
-{% endfor %}
-
-{% if reboot_hosts | length > 0 %}
-| Hostname | RHEL Version | Satellite ARF ID | Reboot Reason |
-| :--- | :--- | :--- | :--- |
-{% for host in reboot_hosts %}
-| **{{ host }}** | RHEL {{ hostvars[host]['ansible_distribution_major_version'] | default('N/A') }} | {{ hostvars[host]['latest_arf_id'] | default('N/A') }} | {{ hostvars[host]['reboot_reason'] | default('Pending reboot flag or kernel update detected.') | trim }} |
-{% endfor %}
-
-> ⚠️ **Action Required:** Schedule a maintenance window for the **{{ reboot_hosts | length }}** host(s) listed above prior to or immediately following remediation execution.
-{% else %}
-✅ **No systems currently require a reboot.** All evaluated RHEL hosts are running on active kernel and library configurations.
-{% endif %}
-
----
-
-## 🔍 Detailed Remediation Snippets by Host & Severity
+## 📋 Remediation Matrix by Host
 
 {% for host in ansible_play_hosts %}
 {% set hvars = hostvars[host] %}
 {% set failed_rules = hvars['failed_rules'] | default([]) %}
 
-## Host Summary: {{ host }}
-* **Operating System:** RHEL {{ hvars['ansible_distribution_major_version'] | default('Unknown') }}
-* **Satellite ARF Report ID:** {{ hvars['latest_arf_id'] | default('N/A') }}
-* **Passed Rules:** {{ hvars['passed_rules_count'] | default(0) }}
-* **Failed Rules:** {{ hvars['failed_rules_count'] | default(0) }}
-* **OS Kernel Reboot Required:** **{{ 'YES' if hvars['reboot_needed'] | default(false) else 'NO' }}**
-* **Reboot Reason:** {{ hvars['reboot_reason'] | default('N/A') | trim }}
+### Host: {{ host }} (RHEL {{ hvars['ansible_distribution_major_version'] | default('N/A') }})
+**Satellite ARF ID:** {{ hvars['latest_arf_id'] | default('N/A') }} | **Total Failures:** {{ failed_rules | length }}
 
-### Failed Rules & Remediation Details
+{% if failed_rules | length > 0 %}
+| Severity | Rule Title / ID | Requires Reboot? | Ansible Remediation Snippet Summary |
+| :---: | :--- | :---: | :--- |
+{% for rule in failed_rules %}
+{% set tags_str = (rule.tags | default([])) | join(' ') %}
+{% set snippet_str = rule.ansible_snippet | default('') %}
+{% set is_reboot = 'YES' if ('no_reboot_needed' not in tags_str and ('reboot' in snippet_str or 'kernel' in snippet_str)) else 'NO' %}
+{% set sev_icon = '🔴 HIGH' if rule.severity == 'high' else ('🟡 MED' if rule.severity == 'medium' else '🟢 LOW') %}
+{% set clean_snippet = snippet_str | replace('|', '&#124;') | replace('\n', ' ') | truncate(80, true, '...') %}
+| **{{ sev_icon }}** | **{{ rule.title | default(rule.id) }}**<br>`{{ rule.id }}` | **{{ is_reboot }}** | {% if snippet_str %}`{{ clean_snippet }}`{% else %}\*Manual Remediation Required\*{% endif %} |
+{% endfor %}
+
+{% else %}
+✅ **No failed compliance rules for this host.**
+{% endif %}
+
+---
+{% endfor %}
+
+## 🛠️ Detailed Remediation Code Blocks
+
+{% for host in ansible_play_hosts %}
+{% set hvars = hostvars[host] %}
+{% set failed_rules = hvars['failed_rules'] | default([]) %}
 {% if failed_rules | length > 0 %}
 
-{% set high_rules = failed_rules | selectattr('severity', 'equalto', 'high') | list %}
-{% set med_rules = failed_rules | selectattr('severity', 'equalto', 'medium') | list %}
-{% set low_rules = failed_rules | selectattr('severity', 'equalto', 'low') | list %}
+### {{ host }} — Executable Playbook Snippets
 
-#### 🔴 HIGH Severity Failures
-{% if high_rules | length > 0 %}
-{% for rule in high_rules %}
-##### Rule: {{ rule.title | default(rule.id) }}
-* **Rule ID:** `{{ rule.id }}`
-* **Severity:** `HIGH`
-* **Snippet Requires Reboot:** **{% if 'no_reboot_needed' not in (rule.tags | default([])) and ('reboot' in (rule.ansible_snippet | default('')) or 'kernel' in (rule.ansible_snippet | default(''))) %}YES{% else %}NO{% endif %}**
-
+{% for rule in failed_rules %}
 {% if rule.ansible_snippet %}
-```yaml
-# Ansible Remediation Snippet (High Severity)
-{{ rule.ansible_snippet }}
-{% else %}
-No automated Ansible snippet provided for this rule.
-{% endif %}
+#### [{{ rule.severity | upper }}] {{ rule.title | default(rule.id) }}
 
-{% endfor %}
-{% else %}
-No High severity failures for this host.
+
+```yaml
+# Host: {{ host }}
+# Rule ID: {{ rule.id }}
+# Severity: {{ rule.severity }}
+{{ rule.ansible_snippet }}
 {% endif %}
+{% endfor %}
+
+{% endif %}
+{% endfor %}
