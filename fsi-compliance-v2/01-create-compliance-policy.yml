@@ -1,0 +1,106 @@
+---
+# v2 -- rebuilt with everything confirmed working today.
+#
+# CONFIRMED against a live Satellite 6.18 instance:
+#   - POST /api/compliance/policies with this exact body shape succeeds (201)
+#   - Requires the theforeman.foreman_scap_client Ansible role to be imported
+#     into Satellite FIRST, or this fails with a 422 and a clear error message
+#     naming the missing role. Run this once, before ever using this playbook:
+#       foreman-rake katello:foreman_ansible:import_roles ROLES_NAME='theforeman.foreman_scap_client'
+#   - 422 on creation generally means "policy with this name already exists" --
+#     safe to treat as success (idempotent), but verify if you see it and are
+#     NOT expecting the policy to already exist.
+#
+# CUSTOMIZABLE: every value below is a variable with no baked-in default for
+# the things that differ per-org (policy name, framework, hostgroup). This is
+# designed to be launched via an AAP Survey -- see the Survey spec in this
+# project's README for the exact question/variable mapping.
+
+- name: Create a Satellite compliance policy
+  hosts: localhost
+  gather_facts: false
+  vars:
+    satellite_url: "{{ satellite_url | default('https://ip-10-0-1-135.us-east-2.compute.internal') }}"
+
+    # --- Customize these per policy you want to create ---
+    # policy_name:              e.g. "fsi-pci-dss-rhel9"  (REQUIRED, no default --
+    #                           forces a deliberate choice, avoids silent reuse)
+    # policy_description:       human-readable description (REQUIRED)
+    # scap_content_id:          numeric Satellite ID -- look up via:
+    #                           GET /api/compliance/scap_contents
+    # scap_content_profile_id:  numeric Satellite ID -- look up via:
+    #                           GET /api/compliance/scap_content_profiles?scap_content_id=<id>
+    # tailoring_file_id:        optional, numeric -- omit/null for no tailoring
+    # tailoring_file_profile_id: required if tailoring_file_id is set
+    # hostgroup_ids:            list of numeric hostgroup IDs to attach at
+    #                           creation time (optional -- can also attach later
+    #                           via 02-assign-hostgroup-to-policy.yml)
+    # period:                   "weekly" | "monthly" | "daily" (default weekly)
+    # weekday:                  required if period=weekly (e.g. "sunday")
+    # day_of_month:             required if period=monthly (e.g. "1")
+
+    period: "{{ period | default('weekly') }}"
+    weekday: "{{ weekday | default('sunday') }}"
+
+  tasks:
+    - name: Validate required variables are set
+      ansible.builtin.assert:
+        that:
+          - policy_name is defined
+          - policy_description is defined
+          - scap_content_id is defined
+          - scap_content_profile_id is defined
+        fail_msg: >-
+          Missing required variable(s). This playbook needs: policy_name,
+          policy_description, scap_content_id, scap_content_profile_id.
+          Look up content/profile IDs via GET /api/compliance/scap_contents
+          and GET /api/compliance/scap_content_profiles?scap_content_id=<id>
+          before running this.
+
+    - name: Build the policy request body
+      ansible.builtin.set_fact:
+        policy_body:
+          name: "{{ policy_name }}"
+          description: "{{ policy_description }}"
+          scap_content_id: "{{ scap_content_id }}"
+          scap_content_profile_id: "{{ scap_content_profile_id }}"
+          deploy_by: "ansible"
+          period: "{{ period }}"
+          weekday: "{{ weekday if period == 'weekly' else omit }}"
+          day_of_month: "{{ day_of_month if period == 'monthly' else omit }}"
+          hostgroup_ids: "{{ hostgroup_ids | default([]) }}"
+          tailoring_file_id: "{{ tailoring_file_id | default(omit) }}"
+          tailoring_file_profile_id: "{{ tailoring_file_profile_id | default(omit) }}"
+
+    - name: Create the compliance policy
+      ansible.builtin.uri:
+        url: "{{ satellite_url }}/api/compliance/policies"
+        method: POST
+        user: "{{ satellite_user }}"
+        password: "{{ satellite_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        body_format: json
+        body:
+          policy: "{{ policy_body }}"
+        status_code: [200, 201, 422]
+      register: policy_result
+
+    - name: Interpret the result
+      ansible.builtin.debug:
+        msg: >-
+          {%- if policy_result.status in [200, 201] -%}
+          Created policy '{{ policy_name }}' (id {{ policy_result.json.id }}).
+          {%- elif policy_result.status == 422 and 'already been taken' in (policy_result.json.error.full_messages | default([]) | join(' ')) -%}
+          Policy '{{ policy_name }}' already exists -- no change made (idempotent).
+          {%- else -%}
+          Unexpected 422 response, this may be a REAL validation error, not
+          just "already exists". Full response: {{ policy_result.json }}
+          {%- endif -%}
+
+    - name: Fail loudly if the 422 was NOT just "already exists"
+      ansible.builtin.fail:
+        msg: "Policy creation failed with a genuine validation error: {{ policy_result.json }}"
+      when:
+        - policy_result.status == 422
+        - "'already been taken' not in (policy_result.json.error.full_messages | default([]) | join(' '))"

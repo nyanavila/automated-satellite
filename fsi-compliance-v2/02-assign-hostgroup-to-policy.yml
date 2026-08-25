@@ -1,0 +1,103 @@
+---
+# v2 -- REPLACES the old 02-assign-hosts-to-policy.yml, which used
+# PUT /api/compliance/policies/{id}/hosts/{host_id} -- CONFIRMED this endpoint
+# does not exist on Satellite 6.18 (404). That was an unverified guess in the
+# original version, not a real Satellite API.
+#
+# The confirmed-correct pattern, based on the policy object's own schema
+# (which shows "hostgroup_ids" as an accepted field at creation time, and
+# "hosts"/"hostgroups" as collections in the response): assign a HOSTGROUP
+# to the policy via PUT on the policy resource itself, then manage which
+# hosts are IN that hostgroup separately (via Satellite's normal host->
+# hostgroup assignment, which is a well-established, documented mechanism --
+# unlike the per-host compliance endpoint we tried before).
+#
+# This also matches how you'd actually operate this in practice: you manage
+# fleet membership via hostgroups (add/remove a host from "corebanking-rhel9"),
+# and the compliance policy just points at the hostgroup once.
+
+- name: Assign a hostgroup to a Satellite compliance policy
+  hosts: localhost
+  gather_facts: false
+  vars:
+    satellite_url: "{{ satellite_url | default('https://ip-10-0-1-135.us-east-2.compute.internal') }}"
+
+    # --- Customize per run ---
+    # policy_name:      e.g. "fsi-pci-dss-rhel9"        (REQUIRED)
+    # hostgroup_name:   e.g. "fsi-corebanking-rhel9"     (REQUIRED)
+
+  tasks:
+    - name: Validate required variables
+      ansible.builtin.assert:
+        that:
+          - policy_name is defined
+          - hostgroup_name is defined
+        fail_msg: "This playbook needs: policy_name, hostgroup_name"
+
+    - name: Look up the policy by name
+      ansible.builtin.uri:
+        url: "{{ satellite_url }}/api/compliance/policies?search=name%3D%22{{ policy_name | urlencode }}%22"
+        method: GET
+        user: "{{ satellite_user }}"
+        password: "{{ satellite_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code: [200]
+      register: policy_lookup
+
+    - name: Fail if policy not found
+      ansible.builtin.fail:
+        msg: "Policy '{{ policy_name }}' not found in Satellite. Run 01-create-compliance-policy.yml first."
+      when: policy_lookup.json.results | length == 0
+
+    - name: Look up the hostgroup by name
+      ansible.builtin.uri:
+        url: "{{ satellite_url }}/api/hostgroups?search=name%3D%22{{ hostgroup_name | urlencode }}%22"
+        method: GET
+        user: "{{ satellite_user }}"
+        password: "{{ satellite_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code: [200]
+      register: hostgroup_lookup
+
+    - name: Fail if hostgroup not found
+      ansible.builtin.fail:
+        msg: "Hostgroup '{{ hostgroup_name }}' not found in Satellite. Create it first (Configure -> Host Groups)."
+      when: hostgroup_lookup.json.results | length == 0
+
+    - name: Set IDs as facts
+      ansible.builtin.set_fact:
+        policy_id: "{{ policy_lookup.json.results[0].id }}"
+        hostgroup_id: "{{ hostgroup_lookup.json.results[0].id }}"
+        # Preserve any hostgroups already attached, don't clobber them
+        existing_hostgroup_ids: "{{ policy_lookup.json.results[0].hostgroups | default([]) | map(attribute='id') | list }}"
+
+    - name: Attach the hostgroup to the policy (additive, not destructive)
+      ansible.builtin.uri:
+        url: "{{ satellite_url }}/api/compliance/policies/{{ policy_id }}"
+        method: PUT
+        user: "{{ satellite_user }}"
+        password: "{{ satellite_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        body_format: json
+        body:
+          policy:
+            hostgroup_ids: "{{ (existing_hostgroup_ids + [hostgroup_id]) | unique }}"
+        status_code: [200]
+      register: attach_result
+
+    - name: Confirm
+      ansible.builtin.debug:
+        msg: >-
+          Policy '{{ policy_name }}' (id {{ policy_id }}) now includes
+          hostgroup '{{ hostgroup_name }}' (id {{ hostgroup_id }}).
+          Full hostgroup list on policy: {{ attach_result.json.hostgroups | map(attribute='name') | list }}
+
+    - name: Reminder about actual host membership
+      ansible.builtin.debug:
+        msg: >-
+          NOTE: this only links the hostgroup to the policy. Hosts must
+          separately be members of '{{ hostgroup_name }}' for the policy to
+          actually apply to them (Hosts -> select hosts -> Change Host Group).

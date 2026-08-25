@@ -1,0 +1,125 @@
+---
+- name: Parse Satellite ARF reports and generate remediation matrix
+  hosts: all
+  gather_facts: true
+  vars:
+    satellite_url: "{{ satellite_url | default('https://ip-10-0-1-135.us-east-2.compute.internal') }}"
+    # CUSTOMIZABLE: pass policy_name explicitly (e.g. -e policy_name=fsi-pci-dss-rhel9)
+    # rather than relying on OS-version auto-detection -- this lets you run
+    # CIS, HIPAA, or any other policy against any host without editing the
+    # playbook. Falls back to the OS-version convention only if policy_name
+    # is not passed in. (Note: uses a differently-named var, policy_name, to
+    # avoid Ansible's self-referential-default pitfall with target_policy.)
+    target_policy: >-
+      {{
+        policy_name
+        if policy_name is defined
+        else ('fsi-pci-dss-rhel9' if ansible_distribution_major_version == '9' else 'fsi-pci-dss-rhel8')
+      }}
+
+  tasks:
+
+    - name: Copy ARF parser script to controller
+      ansible.builtin.copy:
+        src: ../files/parse_arf.py
+        dest: /tmp/parse_arf.py
+        mode: '0755'
+      delegate_to: localhost
+      run_once: true
+
+    - name: Query Satellite for latest ARF report
+      ansible.builtin.uri:
+        url: "{{ satellite_url }}/api/compliance/arf_reports?search=host%3D%22{{ inventory_hostname }}%22+and+policy%3D%22{{ target_policy | urlencode }}%22+and+last_for%3Dhost&per_page=1&order=reported+DESC"
+        method: GET
+        user: "{{ satellite_user }}"
+        password: "{{ satellite_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code: [200]
+      register: arf_search
+
+    - name: Fail gracefully if no ARF report found yet
+      ansible.builtin.meta: end_host
+      when: arf_search.json.results | length == 0
+
+    - name: Set ARF facts
+      ansible.builtin.set_fact:
+        latest_arf_id: "{{ arf_search.json.results[0].id }}"
+        failed_rules_count: "{{ arf_search.json.results[0].failed | default(0) }}"
+        passed_rules_count: "{{ arf_search.json.results[0].passed | default(0) }}"
+
+    - name: Download ARF report bzip2
+      ansible.builtin.uri:
+        url: "{{ satellite_url }}/api/compliance/arf_reports/{{ latest_arf_id }}/download"
+        method: GET
+        user: "{{ satellite_user }}"
+        password: "{{ satellite_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        return_content: true
+        dest: "/tmp/arf_{{ inventory_hostname }}_{{ latest_arf_id }}.xml.bz2"
+        status_code: [200]
+      delegate_to: localhost
+
+    - name: Decompress ARF report
+      ansible.builtin.command:
+        cmd: "bunzip2 -f /tmp/arf_{{ inventory_hostname }}_{{ latest_arf_id }}.xml.bz2"
+      delegate_to: localhost
+      changed_when: true
+
+    - name: Parse ARF XML and extract failed rules with severity
+      ansible.builtin.command:
+        cmd: "python3 /tmp/parse_arf.py /tmp/arf_{{ inventory_hostname }}_{{ latest_arf_id }}.xml"
+      register: parsed_rules
+      delegate_to: localhost
+      changed_when: false
+
+    - name: Set failed rules fact
+      ansible.builtin.set_fact:
+        failed_rules: "{{ parsed_rules.stdout | from_json }}"
+
+    - name: Categorise by severity
+      ansible.builtin.set_fact:
+        high_rules:   "{{ failed_rules | selectattr('severity', 'equalto', 'high')   | list }}"
+        medium_rules: "{{ failed_rules | selectattr('severity', 'equalto', 'medium') | list }}"
+        low_rules:    "{{ failed_rules | selectattr('severity', 'equalto', 'low')    | list }}"
+        reboot_rules: "{{ failed_rules | selectattr('needs_reboot', 'equalto', true) | list }}"
+
+    - name: Check host reboot requirements
+      ansible.builtin.command: needs-restarting -r
+      register: needs_restarting_check
+      failed_when: false
+      changed_when: false
+
+    - name: Set reboot status
+      ansible.builtin.set_fact:
+        reboot_needed: "{{ true if needs_restarting_check.rc == 1 else false }}"
+
+    - name: Display summary
+      ansible.builtin.debug:
+        msg:
+          - "HOST:    {{ inventory_hostname }}"
+          - "POLICY:  {{ target_policy }}"
+          - "PASSED:  {{ passed_rules_count }}"
+          - "FAILED:  {{ failed_rules_count }}"
+          - "HIGH:    {{ high_rules | length }}"
+          - "MEDIUM:  {{ medium_rules | length }}"
+          - "LOW:     {{ low_rules | length }}"
+          - "REBOOT:  {{ 'YES' if reboot_needed else 'NO' }}"
+
+    - name: Render remediation matrix
+      ansible.builtin.template:
+        src: ../templates/remediation_matrix.j2
+        dest: "/tmp/remediation_matrix_{{ inventory_hostname }}_{{ ansible_date_time.date }}.md"
+        mode: '0644'
+      delegate_to: localhost
+
+    - name: Show HIGH severity rule detail
+      ansible.builtin.debug:
+        msg:
+          - "Rule: {{ item.title }}"
+          - "ID:   {{ item.id }}"
+          - "Reboot needed: {{ item.needs_reboot }}"
+      loop: "{{ high_rules }}"
+      loop_control:
+        label: "{{ item.id }}"

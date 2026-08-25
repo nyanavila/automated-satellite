@@ -1,0 +1,76 @@
+---
+# Applies OpenSCAP's built-in remediation snippets for HIGH severity findings only.
+# Run 04-parse-arf-and-report.yml first — this expects `high_rules` to already be
+# set as a fact (chain these in an AAP Workflow Template, or pass as extra_vars
+# if running standalone with a previously-saved matrix).
+#
+# Safety: this only remediates rules explicitly marked has_snippet=true (meaning
+# OpenSCAP ships a tested fix), and only HIGH severity — medium/low findings are
+# left for manual review by design, since auto-remediating everything blind is
+# not appropriate for an FSI production estate.
+- name: Remediate HIGH severity compliance findings
+  hosts: all
+  gather_facts: false
+  vars:
+    satellite_url: "{{ satellite_url | default('https://ip-10-0-1-135.us-east-2.compute.internal') }}"
+    # CUSTOMIZABLE -- see the same note in 04-parse-arf-and-report.yml
+    target_policy: >-
+      {{
+        policy_name
+        if policy_name is defined
+        else ('fsi-pci-dss-rhel9' if ansible_distribution_major_version == '9' else 'fsi-pci-dss-rhel8')
+      }}
+
+  tasks:
+    - name: Confirm high_rules fact is available
+      ansible.builtin.fail:
+        msg: "No high_rules fact set — run 04-parse-arf-and-report.yml first in this same play/workflow."
+      when: high_rules is not defined
+
+    - name: Filter to rules with an available automated fix
+      ansible.builtin.set_fact:
+        remediable_rules: "{{ high_rules | selectattr('has_snippet', 'equalto', true) | list }}"
+
+    - name: Report rules that need manual attention
+      ansible.builtin.debug:
+        msg: "MANUAL REVIEW REQUIRED (no automated fix): {{ item.id }} — {{ item.title }}"
+      loop: "{{ high_rules | rejectattr('has_snippet', 'equalto', true) | list }}"
+      loop_control:
+        label: "{{ item.id }}"
+
+    - name: Trigger Satellite remediation job for remediable rules
+      ansible.builtin.uri:
+        url: "{{ satellite_url }}/api/job_invocations"
+        method: POST
+        user: "{{ satellite_user }}"
+        password: "{{ satellite_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        body_format: json
+        body:
+          job_invocation:
+            feature: "foreman_openscap.remediate"
+            inputs:
+              rule_ids: "{{ remediable_rules | map(attribute='id') | list }}"
+            search_query: "name = {{ inventory_hostname }}"
+        status_code: [200, 201]
+      register: remediation_job
+      when: remediable_rules | length > 0
+      delegate_to: localhost
+
+    - name: Flag if any remediated rule needs a reboot
+      ansible.builtin.set_fact:
+        remediation_needs_reboot: "{{ remediable_rules | selectattr('needs_reboot', 'equalto', true) | list | length > 0 }}"
+
+    - name: Warn that a reboot will be needed to complete remediation
+      ansible.builtin.debug:
+        msg: "WARNING: one or more remediated rules require a reboot to take full effect. Schedule this host for a maintenance-window reboot."
+      when: remediation_needs_reboot | default(false)
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg:
+          - "Host: {{ inventory_hostname }}"
+          - "Rules auto-remediated: {{ remediable_rules | length }}"
+          - "Rules requiring manual fix: {{ (high_rules | length) - (remediable_rules | length) }}"
+          - "Reboot needed: {{ 'YES' if remediation_needs_reboot | default(false) else 'NO' }}"
